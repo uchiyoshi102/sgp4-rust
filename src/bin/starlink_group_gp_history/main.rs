@@ -1,9 +1,9 @@
 use sgp4::starlink::manifest::{group_catalog_rows, load_catalog_rows, unique_norad_ids};
 use sgp4::starlink::spacetrack::{
     build_gp_history_csv_url_candidates, build_gp_history_zip_url, build_query_window, can_try_zip,
-    describe_query_window, download_first_usable_csv, extract_zip, list_csv_files, load_credentials,
-    login_to_space_track, merge_csv_files, split_ids, try_zip_download, window_file_stem,
-    write_url_manifest, CookieJar, CsvResponseCheck, QueryWindow,
+    describe_query_window, download_binary, extract_zip, inspect_csv_response, list_csv_files,
+    load_credentials, login_to_space_track, merge_csv_files, split_ids, try_zip_download,
+    window_file_stem, write_url_manifest, CookieJar, CsvResponseCheck, QueryWindow,
 };
 use std::env;
 use std::fs;
@@ -19,6 +19,7 @@ struct Config {
     end_date: Option<String>,
     chunk_size: usize,
     identity: Option<String>,
+    resume: bool,
     dry_run: bool,
 }
 
@@ -73,6 +74,11 @@ fn main() -> io::Result<()> {
     for (group_slug, rows) in &selected_groups {
         let group_dir = config.output_dir.join(group_slug);
         fs::create_dir_all(&group_dir)?;
+        let stable_csv_path = group_dir.join("starlink_gp_history.csv");
+        if config.resume && stable_csv_path.exists() {
+            eprintln!("Skipping completed group {} because {} already exists", group_slug, stable_csv_path.display());
+            continue;
+        }
         let ids = unique_norad_ids(rows);
         download_group_history(
             cookie_jar.path(),
@@ -102,6 +108,7 @@ fn parse_args() -> io::Result<Config> {
     let mut end_date = None;
     let mut chunk_size = 20usize;
     let mut identity = None;
+    let mut resume = false;
     let mut dry_run = false;
 
     while let Some(arg) = args.next() {
@@ -153,6 +160,7 @@ fn parse_args() -> io::Result<Config> {
                     io::Error::new(io::ErrorKind::InvalidInput, "missing value for --identity")
                 })?);
             }
+            "--resume" => resume = true,
             "--dry-run" => dry_run = true,
             "--help" | "-h" => {
                 print_usage();
@@ -175,6 +183,7 @@ fn parse_args() -> io::Result<Config> {
         end_date,
         chunk_size,
         identity,
+        resume,
         dry_run,
     })
 }
@@ -189,6 +198,7 @@ fn print_usage() {
     println!("  --end-date YYYY-MM-DD");
     println!("  --chunk-size N");
     println!("  --identity USER");
+    println!("  --resume");
     println!("  --dry-run");
     println!();
     println!("Defaults:");
@@ -240,19 +250,16 @@ fn download_group_history(
     let batch_dir = group_dir.join("batches");
     fs::create_dir_all(&batch_dir)?;
     let mut batch_paths = Vec::new();
-    for (index, urls) in batch_urls.iter().enumerate() {
-        let batch_path = batch_dir.join(format!("batch_{:03}.csv", index + 1));
-        let response_kind = download_first_usable_csv(cookie_path, urls, &batch_path)?;
-        if matches!(response_kind, CsvResponseCheck::Empty) {
-            eprintln!(
-                "Skipped empty batch {}/{}: {}",
-                index + 1,
-                batch_urls.len(),
-                batch_path.display()
-            );
-            continue;
-        }
-        batch_paths.push(batch_path);
+    let mut next_batch_index = 1usize;
+    for ids_chunk in chunks {
+        download_chunk_recursive(
+            cookie_path,
+            &ids_chunk,
+            query_window,
+            &batch_dir,
+            &mut next_batch_index,
+            &mut batch_paths,
+        )?;
     }
     if batch_paths.is_empty() {
         return Err(io::Error::new(
@@ -263,4 +270,94 @@ fn download_group_history(
     merge_csv_files(&batch_paths, &merged_csv_path)?;
     fs::copy(&merged_csv_path, &stable_csv_path)?;
     Ok(())
+}
+
+fn download_chunk_recursive(
+    cookie_path: &Path,
+    ids: &[String],
+    query_window: &QueryWindow,
+    batch_dir: &Path,
+    next_batch_index: &mut usize,
+    batch_paths: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    let batch_number = *next_batch_index;
+    *next_batch_index += 1;
+
+    let batch_path = batch_dir.join(format!("batch_{:03}.csv", batch_number));
+    let urls = build_gp_history_csv_url_candidates(ids, query_window);
+    let mut last_error = None::<io::Error>;
+
+    for (variant_index, url) in urls.iter().enumerate() {
+        download_binary(cookie_path, url, &batch_path)?;
+        match inspect_csv_response(&batch_path) {
+            Ok(CsvResponseCheck::Valid) => {
+                eprintln!(
+                    "Saved batch {} with {} NORAD IDs: {}",
+                    batch_number,
+                    ids.len(),
+                    batch_path.display()
+                );
+                batch_paths.push(batch_path.clone());
+                return Ok(());
+            }
+            Ok(CsvResponseCheck::Empty) => {
+                let _ = fs::remove_file(&batch_path);
+                eprintln!("Skipped empty batch {} with {} NORAD IDs", batch_number, ids.len());
+                return Ok(());
+            }
+            Err(error) => {
+                last_error = Some(error);
+                let diagnostic_path = diagnostic_path_for(&batch_path, variant_index + 1);
+                let _ = fs::rename(&batch_path, &diagnostic_path);
+            }
+        }
+    }
+
+    if ids.len() > 1 {
+        let split_at = ids.len() / 2;
+        let (left, right) = ids.split_at(split_at);
+        eprintln!(
+            "Splitting failed batch {} ({} NORAD IDs) into {} and {} IDs",
+            batch_number,
+            ids.len(),
+            left.len(),
+            right.len()
+        );
+        download_chunk_recursive(
+            cookie_path,
+            left,
+            query_window,
+            batch_dir,
+            next_batch_index,
+            batch_paths,
+        )?;
+        download_chunk_recursive(
+            cookie_path,
+            right,
+            query_window,
+            batch_dir,
+            next_batch_index,
+            batch_paths,
+        )?;
+        return Ok(());
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "response did not look like GP_HISTORY CSV for NORAD {} in {}",
+                ids.first().map(String::as_str).unwrap_or("unknown"),
+                batch_dir.display()
+            ),
+        )
+    }))
+}
+
+fn diagnostic_path_for(batch_path: &Path, variant_index: usize) -> PathBuf {
+    let stem = batch_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("batch");
+    batch_path.with_file_name(format!("{stem}_variant_{variant_index}.txt"))
 }

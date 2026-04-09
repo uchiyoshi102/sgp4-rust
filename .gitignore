@@ -5,6 +5,7 @@ target/
 
 # Large/generated Space-Track downloads
 starlink-group-1/
+starlink-group-4/
 starlink-groups/
 *.zip
 
@@ -15,6 +16,7 @@ data/starlink_group_satellite_windows.csv
 data/starlink_group_stats.csv
 data/starlink_ecef.csv
 data/starlink_group_timelapse.html
+data/starlink_shell_map/
 
 # One-off downloaded CSVs
 starlink44713-44715-from2020-07-16.csv

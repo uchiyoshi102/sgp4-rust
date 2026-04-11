@@ -1,0 +1,1859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starlink Shell Map</title>
+<style>
+:root{
+  --bg:#08101a;
+  --panel:#0f1724;
+  --panel-2:#131f30;
+  --ink:#ebf2f7;
+  --muted:#9eb0c2;
+  --line:#203248;
+  --group1:#66d9ff;
+  --group4:#ffb35c;
+  --dish:#9cf5d8;
+}
+html,body{height:100%}
+body{
+  margin:0;
+  color:var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(102,217,255,.15), transparent 28%),
+    radial-gradient(circle at top right, rgba(255,179,92,.16), transparent 30%),
+    linear-gradient(180deg, #0a1320, #08101a 48%, #060c14);
+  font-family:Georgia, 'Times New Roman', serif;
+}
+.page{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(320px,.9fr);min-height:100vh}
+.main{padding:20px 22px 22px}
+.side{border-left:1px solid var(--line);background:rgba(10,17,26,.8);backdrop-filter:blur(18px);padding:20px 18px 22px}
+.hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:16px}
+.eyebrow{font:600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;letter-spacing:.18em;text-transform:uppercase;color:#8aa1b8}
+h1{margin:4px 0 0;font-size:34px;line-height:1.05}
+.lede{max-width:74ch;margin:6px 0 0;color:var(--muted);font-size:14px;line-height:1.6}
+.stamp{font:600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;color:#b7c6d4;text-align:right}
+.map-wrap{position:relative;border:1px solid var(--line);border-radius:20px;overflow:hidden;background:linear-gradient(180deg, rgba(21,43,62,.95), rgba(8,16,26,.96));box-shadow:0 30px 80px rgba(0,0,0,.3)}
+#mapCanvas{display:block;width:100%;height:min(72vh,860px);touch-action:none}
+.overlay{position:absolute;left:16px;right:16px;bottom:16px;display:flex;justify-content:space-between;gap:12px;pointer-events:none}
+.pill{background:rgba(7,12,19,.72);border:1px solid rgba(164,184,203,.18);border-radius:999px;padding:10px 14px;font:600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace}
+.grid{display:grid;gap:12px}
+.card{background:linear-gradient(180deg, rgba(19,31,48,.9), rgba(12,19,29,.92));border:1px solid var(--line);border-radius:16px;padding:14px}
+.card h2{margin:0 0 10px;font-size:15px}
+.control-row{display:grid;gap:10px}
+.inline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.inline > *{flex:1 1 0}
+.view-toggle{gap:8px}
+.view-toggle button.active{
+  background:#14304a;
+  border-color:#4f88b8;
+  box-shadow:inset 0 0 0 1px rgba(179,222,255,.16);
+}
+label,.muted{font:600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;color:var(--muted)}
+button,select,input[type=range]{width:100%}
+button,select{
+  border:1px solid #2a4058;
+  background:#0d1724;
+  color:var(--ink);
+  border-radius:12px;
+  padding:10px 12px;
+  font:600 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+button{cursor:pointer}
+button:hover{background:#102034}
+input[type=range]{accent-color:#7fd7ff}
+.checks{display:grid;gap:8px}
+.check{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid #223347;
+  background:#0d1724;
+}
+.check input{width:auto}
+.key{display:flex;align-items:center;gap:9px}
+.swatch{width:10px;height:10px;border-radius:999px}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.stat{padding:10px 12px;border-radius:12px;background:#0b1420;border:1px solid #1d2d41}
+.stat strong{display:block;font-size:22px;line-height:1.1}
+.stat span{display:block;margin-top:4px;color:var(--muted);font:600 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;text-transform:uppercase;letter-spacing:.08em}
+.shell-list{display:grid;gap:10px}
+.shell-row{padding:11px 12px;border-radius:12px;background:#0b1420;border:1px solid #1d2d41}
+.shell-row h3{margin:0 0 6px;font-size:14px}
+.shell-row p{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.mini-list{display:grid;gap:8px}
+.mini-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border-radius:12px;background:#0b1420;border:1px solid #1d2d41;cursor:pointer}
+.mini-row.active{border-color:#7fd7ff;background:#102034;box-shadow:inset 0 0 0 1px rgba(127,215,255,.16)}
+.mini-row strong{font-size:13px}
+.mini-row span{color:var(--muted);font-size:12px}
+.mini-row button{width:auto;padding:7px 10px;border-radius:10px}
+.mini-actions{display:flex;align-items:center;gap:8px}
+.mini-badge{font:600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;color:#bfeeff}
+.chart-wrap{border:1px solid #223347;border-radius:14px;background:#0b1420;padding:10px}
+#elazCanvas{display:block;width:100%;height:240px}
+.legend-scale{display:grid;gap:8px}
+.legend-bar{height:14px;border-radius:999px;border:1px solid #2a4058;background:linear-gradient(90deg,#66d9ff,#122030,#ffb35c)}
+.legend-labels{display:flex;justify-content:space-between;gap:10px;font:600 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;color:var(--muted)}
+.legend-mid{text-align:center;flex:1}
+.legend-note{color:#d8e4ee;font-size:12px;line-height:1.5}
+#hover{min-height:70px;color:#d8e4ee;font-size:13px;line-height:1.6}
+code{font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#bfeeff}
+.is-hidden{display:none}
+@media (max-width: 1080px){
+  .page{grid-template-columns:1fr}
+  .side{border-left:0;border-top:1px solid var(--line)}
+  #mapCanvas{height:62vh}
+}
+</style></head>
+<body>
+<div class="page">
+<section class="main">
+<div class="hero">
+<div><div class="eyebrow">Starlink Shell Visualizer</div><h1>Group 1 vs Group 4</h1><p class="lede">The map overlays shell-specific Starlink positions on top of a gridded Earth projection, then shades each surface cell by visible-satellite count using a 25&deg; minimum elevation rule. A second mode draws Japanese user dishes, their current satellite peers, and the linked satellites&rsquo; coverage footprints.</p></div>
+<div class="stamp">Center UTC<br><strong>2019-11-20T00:00:00+00:00</strong><br>Grid 5&deg; x 5&deg;<br>Step 5 min</div>
+</div>
+<div class="map-wrap"><canvas id="mapCanvas"></canvas><div class="overlay"><div class="pill" id="timePill">Loading...</div><div class="pill" id="modePill">Compare: diff (25&deg; min elevation)</div></div></div>
+</section>
+<aside class="side"><div class="grid">
+<div class="card"><h2>Playback</h2><div class="control-row"><div class="inline"><button id="playPause">Pause</button><button id="projectionToggle">Switch To Globe</button><select id="speedSelect"><option value="1">Real time</option><option value="60" selected>60x</option><option value="300">300x</option></select></div><div class="inline"><button id="nextLaunch">Next Launch</button><button id="nextDecay">Next Decay</button></div><div class="muted" id="eventSummary">Loading next launch/decay dates...</div><label for="frameSlider">Frame</label><input id="frameSlider" type="range" min="0" max="0" value="0"></div></div>
+<div class="card"><h2 id="zoomTitle">Map Zoom</h2><div class="control-row"><div class="inline"><button id="zoomOut">Zoom Out</button><button id="zoomIn">Zoom In</button><button id="zoomReset">Reset</button></div><label for="zoomSlider">Scale</label><input id="zoomSlider" type="range" min="100" max="800" step="10" value="100"><div class="muted" id="zoomSummary">1.00x</div></div></div>
+<div class="card"><h2>Layers</h2><div class="control-row"><label>View</label><div class="inline view-toggle"><button id="compareViewBtn" class="active">Group Compare</button><button id="dishViewBtn">Dish Links</button></div><div id="compareControls"><label for="heatmapMode">Heatmap</label><select id="heatmapMode"><option value="diff" selected>Group1 - Group4</option><option value="group1">Group 1 visible count</option><option value="group4">Group 4 visible count</option><option value="off">Off</option></select></div><div class="checks" id="shellChecks"></div></div></div>
+<div class="card is-hidden" id="dishesCard"><h2>Dishes</h2><div class="control-row"><div class="muted">Default dishes: Sapporo, Tokyo, Nagoya, Osaka, Fukuoka, Okinawa</div><label for="dishCitySelect">Add city</label><div class="inline"><select id="dishCitySelect"></select><button id="addDishBtn">Add Dish</button></div><div class="mini-list" id="dishList"></div></div></div>
+<div class="card is-hidden" id="elazCard"><h2>EL/AZ Tracker</h2><div class="control-row"><div class="chart-wrap"><canvas id="elazCanvas"></canvas></div><div class="muted" id="elazSummary">Select a dish to generate EL/AZ look angles from the current time forward.</div></div></div>
+<div class="card"><h2 id="legendTitle">Heatmap Legend</h2><div class="legend-scale"><div class="legend-bar" id="legendBar"></div><div class="legend-labels"><span id="legendMin">Group 4 higher</span><span class="legend-mid" id="legendMid">equal</span><span id="legendMax">Group 1 higher</span></div><div class="legend-note" id="legendNote">Colors are normalized to the current frame's peak absolute difference.</div></div></div>
+<div class="card"><h2>Snapshot</h2><div class="stats"><div class="stat"><strong id="satelliteCount">0</strong><span>Displayed Satellites</span></div><div class="stat"><strong id="cellPeak">0</strong><span id="cellPeakLabel">Peak Cell Count</span></div></div></div>
+<div class="card"><h2>Hover</h2><div id="hover">Move the pointer near a satellite.</div></div>
+<div class="card"><h2>Shell Summary</h2><div class="shell-list">
+<div class="shell-row"><h3><span class="swatch" style="display:inline-block;background:#66d9ff"></span> Group 1</h3><p>28 / 28 groups, 60 / 1665 satellites.<br>Latest local epoch: <code>2026-04-10T01:59:30.617664</code></p></div>
+<div class="shell-row"><h3><span class="swatch" style="display:inline-block;background:#ffb35c"></span> Group 4</h3><p>6 / 32 groups, 0 / 1605 satellites.<br>Latest local epoch: <code>2026-04-09T05:18:15.229440</code><br>Missing local groups: group-4-15, group-4-16, group-4-17, group-4-18, group-4-19, group-4-2, group-4-20, group-4-21, group-4-22, group-4-23, group-4-25, group-4-26, group-4-27, group-4-29, group-4-3, group-4-31, group-4-34, group-4-35, group-4-36, group-4-37, group-4-4, group-4-5, group-4-6, group-4-7, group-4-8, group-4-9</p></div>
+</div></div>
+</div></aside></div>
+<script src="data.js"></script>
+<script src="chunks/chunk_initial.js"></script>
+<script>
+const DATA = window.STARLINK_SHELL_DATA;
+const CHUNKS = window.STARLINK_SHELL_CHUNKS || (window.STARLINK_SHELL_CHUNKS = {});
+const WINDOW_STATE = { data: CHUNKS[DATA.meta.initialChunkId] };
+DATA.meta.shells = DATA.shells;
+Object.defineProperty(DATA, 'frames', { get() { return WINDOW_STATE.data.frames; } });
+Object.defineProperty(DATA, 'heatmap', { get() { return WINDOW_STATE.data.heatmap; } });
+Object.defineProperty(DATA, 'satellites', { get() { return WINDOW_STATE.data.satellites; } });
+const canvas = document.getElementById('mapCanvas');
+const ctx = canvas.getContext('2d');
+const frameSlider = document.getElementById('frameSlider');
+const playPause = document.getElementById('playPause');
+const projectionToggle = document.getElementById('projectionToggle');
+const speedSelect = document.getElementById('speedSelect');
+const zoomTitle = document.getElementById('zoomTitle');
+const zoomOutBtn = document.getElementById('zoomOut');
+const zoomInBtn = document.getElementById('zoomIn');
+const zoomResetBtn = document.getElementById('zoomReset');
+const zoomSlider = document.getElementById('zoomSlider');
+const zoomSummary = document.getElementById('zoomSummary');
+const dishesCard = document.getElementById('dishesCard');
+const elazCard = document.getElementById('elazCard');
+const dishCitySelect = document.getElementById('dishCitySelect');
+const addDishBtn = document.getElementById('addDishBtn');
+const dishList = document.getElementById('dishList');
+const elazCanvas = document.getElementById('elazCanvas');
+const elazCtx = elazCanvas.getContext('2d');
+const elazSummary = document.getElementById('elazSummary');
+const heatmapMode = document.getElementById('heatmapMode');
+const compareViewBtn = document.getElementById('compareViewBtn');
+const dishViewBtn = document.getElementById('dishViewBtn');
+const compareControls = document.getElementById('compareControls');
+const shellChecks = document.getElementById('shellChecks');
+const hoverEl = document.getElementById('hover');
+const timePill = document.getElementById('timePill');
+const modePill = document.getElementById('modePill');
+const satelliteCountEl = document.getElementById('satelliteCount');
+const cellPeakEl = document.getElementById('cellPeak');
+const cellPeakLabelEl = document.getElementById('cellPeakLabel');
+const legendTitleEl = document.getElementById('legendTitle');
+const legendBarEl = document.getElementById('legendBar');
+const legendMinEl = document.getElementById('legendMin');
+const legendMidEl = document.getElementById('legendMid');
+const legendMaxEl = document.getElementById('legendMax');
+const legendNoteEl = document.getElementById('legendNote');
+const nextLaunchBtn = document.getElementById('nextLaunch');
+const nextDecayBtn = document.getElementById('nextDecay');
+const eventSummaryEl = document.getElementById('eventSummary');
+
+let dpr = Math.max(1, window.devicePixelRatio || 1);
+let width = 0;
+let height = 0;
+let currentFrame = 0;
+let playing = true;
+let lastTick = performance.now();
+let pointerX = -1e9;
+let pointerY = -1e9;
+const EARTH_RADIUS_KM = 6378.137;
+const MIN_ELEVATION_DEG = 25;
+const MIN_ELEVATION_RAD = MIN_ELEVATION_DEG * Math.PI / 180;
+const MIN_MAP_ZOOM = 1;
+const MAX_MAP_ZOOM = 8;
+const MIN_GLOBE_ZOOM = 1;
+const MAX_GLOBE_ZOOM = 3.2;
+const MAP_PEER_LINE_WIDTH = 2.2;
+const GLOBE_PEER_LINE_WIDTH = 2.4;
+const COVERAGE_LINE_WIDTH = 1.8;
+const DEFAULT_DISHES = [
+  { id: 'sapporo', name: 'Sapporo', country: 'Japan', lat: 43.0618, lon: 141.3545, removable: false },
+  { id: 'tokyo', name: 'Tokyo', country: 'Japan', lat: 35.6762, lon: 139.6503, removable: false },
+  { id: 'nagoya', name: 'Nagoya', country: 'Japan', lat: 35.1815, lon: 136.9066, removable: false },
+  { id: 'osaka', name: 'Osaka', country: 'Japan', lat: 34.6937, lon: 135.5023, removable: false },
+  { id: 'fukuoka', name: 'Fukuoka', country: 'Japan', lat: 33.5902, lon: 130.4017, removable: false },
+  { id: 'okinawa', name: 'Okinawa', country: 'Japan', lat: 26.2124, lon: 127.6809, removable: false },
+];
+const EXTRA_DISH_CITIES = [
+  { id: 'seoul', name: 'Seoul', country: 'South Korea', lat: 37.5665, lon: 126.9780 },
+  { id: 'taipei', name: 'Taipei', country: 'Taiwan', lat: 25.0330, lon: 121.5654 },
+  { id: 'singapore', name: 'Singapore', country: 'Singapore', lat: 1.3521, lon: 103.8198 },
+  { id: 'sydney', name: 'Sydney', country: 'Australia', lat: -33.8688, lon: 151.2093 },
+  { id: 'auckland', name: 'Auckland', country: 'New Zealand', lat: -36.8509, lon: 174.7645 },
+  { id: 'honolulu', name: 'Honolulu', country: 'United States', lat: 21.3069, lon: -157.8583 },
+  { id: 'anchorage', name: 'Anchorage', country: 'United States', lat: 61.2181, lon: -149.9003 },
+  { id: 'san-francisco', name: 'San Francisco', country: 'United States', lat: 37.7749, lon: -122.4194 },
+  { id: 'los-angeles', name: 'Los Angeles', country: 'United States', lat: 34.0549, lon: -118.2426 },
+  { id: 'new-york', name: 'New York', country: 'United States', lat: 40.7128, lon: -74.0060 },
+  { id: 'sao-paulo', name: 'Sao Paulo', country: 'Brazil', lat: -23.5505, lon: -46.6333 },
+  { id: 'london', name: 'London', country: 'United Kingdom', lat: 51.5072, lon: -0.1276 },
+  { id: 'paris', name: 'Paris', country: 'France', lat: 48.8566, lon: 2.3522 },
+  { id: 'berlin', name: 'Berlin', country: 'Germany', lat: 52.5200, lon: 13.4050 },
+  { id: 'cairo', name: 'Cairo', country: 'Egypt', lat: 30.0444, lon: 31.2357 },
+  { id: 'nairobi', name: 'Nairobi', country: 'Kenya', lat: -1.2921, lon: 36.8219 },
+  { id: 'dubai', name: 'Dubai', country: 'United Arab Emirates', lat: 25.2048, lon: 55.2708 },
+  { id: 'mumbai', name: 'Mumbai', country: 'India', lat: 19.0760, lon: 72.8777 },
+  { id: 'cape-town', name: 'Cape Town', country: 'South Africa', lat: -33.9249, lon: 18.4241 },
+];
+const CELL_POINTS = DATA.cells.map((cell, index) => {
+  const lat = (cell[0] + cell[1]) * 0.5;
+  const lon = wrapLon((cell[2] + cell[3]) * 0.5);
+  return { index, lat, lon, unit: latLonToUnit(lat, lon) };
+});
+const state = {
+  visibleShells: new Set(DATA.meta.shells.map(item => item.shellId)),
+  visibleShellKey: DATA.meta.shells.map(item => item.shellId).sort().join('|'),
+  projectionMode: 'map',
+  viewMode: 'compare',
+  mapZoom: 1,
+  mapOffsetX: 0,
+  mapOffsetY: 0,
+  globeZoom: 1,
+  globeYaw: -0.9,
+  globePitch: 0.35,
+  dragging: false,
+  dragMode: null,
+  dragLastX: 0,
+  dragLastY: 0,
+  dragStartX: 0,
+  dragStartY: 0,
+  visibleSatelliteCache: null,
+  segmentCache: new WeakMap(),
+  events: { launches: [], decays: [] },
+  frameTimesMs: [],
+  frameStartMs: 0,
+  frameEndMs: 0,
+  frameStepMs: Math.max(60000, DATA.meta.stepMinutes * 60 * 1000),
+  highlightTimeMs: WINDOW_STATE.data.highlightTimeUtc ? Date.parse(WINDOW_STATE.data.highlightTimeUtc) : null,
+  highlightNorads: new Set(WINDOW_STATE.data.highlightNorads || []),
+  frameAnalysisCache: new Map(),
+  dishes: DEFAULT_DISHES.map(createDishPoint),
+  selectedDishId: 'tokyo',
+  dragMoved: false,
+};
+
+function normalizeSatellites(satellites) {
+  for (const satellite of satellites) {
+    satellite.launchMs = Date.parse(`${satellite.launchDate}T00:00:00Z`);
+    satellite.decayMs = satellite.decayUtc ? Date.parse(satellite.decayUtc) : null;
+  }
+}
+
+function createDishPoint(dish) {
+  const latRad = dish.lat * Math.PI / 180;
+  const lonRad = dish.lon * Math.PI / 180;
+  return {
+    ...dish,
+    removable: Boolean(dish.removable),
+    unit: latLonToUnit(dish.lat, dish.lon),
+    east: { x: -Math.sin(lonRad), y: Math.cos(lonRad), z: 0 },
+    north: {
+      x: -Math.sin(latRad) * Math.cos(lonRad),
+      y: -Math.sin(latRad) * Math.sin(lonRad),
+      z: Math.cos(latRad),
+    },
+  };
+}
+
+function activeDishes() {
+  return state.dishes;
+}
+
+function selectedDish() {
+  return activeDishes().find(dish => dish.id === state.selectedDishId) || null;
+}
+
+function refreshFrameCache() {
+  state.frameTimesMs = DATA.frames.map(value => Date.parse(value));
+  state.frameStartMs = state.frameTimesMs[0] || 0;
+  state.frameEndMs = state.frameTimesMs[state.frameTimesMs.length - 1] || state.frameStartMs;
+  state.frameStepMs = state.frameTimesMs.length > 1
+    ? state.frameTimesMs[1] - state.frameTimesMs[0]
+    : Math.max(60000, DATA.meta.stepMinutes * 60 * 1000);
+}
+normalizeSatellites(DATA.satellites);
+refreshFrameCache();
+
+function updateProjectionToggle() {
+  projectionToggle.textContent = state.projectionMode === 'map'
+    ? 'Switch To Globe'
+    : 'Switch To Map';
+}
+
+function ensureSelectedDish() {
+  if (selectedDish()) return;
+  state.selectedDishId = activeDishes()[0]?.id || null;
+}
+
+function setSelectedDish(dishId) {
+  if (!activeDishes().some(dish => dish.id === dishId)) return;
+  state.selectedDishId = dishId;
+  renderDishManager();
+  draw();
+}
+
+function renderDishManager() {
+  ensureSelectedDish();
+  const activeIds = new Set(activeDishes().map(dish => dish.id));
+  dishCitySelect.innerHTML = '';
+  const available = EXTRA_DISH_CITIES
+    .filter(city => !activeIds.has(city.id))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  if (!available.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No more preset cities';
+    dishCitySelect.appendChild(option);
+    dishCitySelect.disabled = true;
+    addDishBtn.disabled = true;
+  } else {
+    for (const city of available) {
+      const option = document.createElement('option');
+      option.value = city.id;
+      option.textContent = `${city.name}, ${city.country}`;
+      dishCitySelect.appendChild(option);
+    }
+    dishCitySelect.disabled = false;
+    addDishBtn.disabled = false;
+  }
+
+  dishList.innerHTML = '';
+  for (const dish of activeDishes()) {
+    const row = document.createElement('div');
+    row.className = 'mini-row';
+    if (dish.id === state.selectedDishId) row.classList.add('active');
+    row.innerHTML = `<div><strong>${dish.name}</strong><br><span>${dish.country} / ${dish.lat.toFixed(2)}°, ${dish.lon.toFixed(2)}°</span></div>`;
+    row.addEventListener('click', () => {
+      setSelectedDish(dish.id);
+    });
+    const actions = document.createElement('div');
+    actions.className = 'mini-actions';
+    if (dish.id === state.selectedDishId) {
+      const badge = document.createElement('span');
+      badge.className = 'mini-badge';
+      badge.textContent = 'Selected';
+      actions.appendChild(badge);
+    }
+    if (dish.removable) {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', event => {
+        event.stopPropagation();
+        state.dishes = state.dishes.filter(item => item.id !== dish.id);
+        ensureSelectedDish();
+        invalidateComputedCaches();
+        renderDishManager();
+        draw();
+      });
+      actions.appendChild(removeBtn);
+    } else {
+      const badge = document.createElement('span');
+      badge.className = 'muted';
+      badge.textContent = 'Default';
+      actions.appendChild(badge);
+    }
+    row.appendChild(actions);
+    dishList.appendChild(row);
+  }
+}
+
+function addSelectedDish() {
+  const city = EXTRA_DISH_CITIES.find(item => item.id === dishCitySelect.value);
+  if (!city) return;
+  state.dishes = [...state.dishes, createDishPoint({ ...city, removable: true })];
+  invalidateComputedCaches();
+  renderDishManager();
+  draw();
+}
+
+function computeLookAngles(dish, point) {
+  const observer = globeVector(dish.lat, dish.lon, 0);
+  const satellite = globeVector(point.lat, point.lon, point.alt);
+  const relative = {
+    x: satellite.x - observer.x,
+    y: satellite.y - observer.y,
+    z: satellite.z - observer.z,
+  };
+  const east = dotVec(relative, dish.east);
+  const north = dotVec(relative, dish.north);
+  const up = dotVec(relative, dish.unit);
+  let az = Math.atan2(east, north) * 180 / Math.PI;
+  if (az < 0) az += 360;
+  const el = Math.atan2(up, Math.hypot(east, north)) * 180 / Math.PI;
+  return { az, el };
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampMapOffsets() {
+  const maxOffsetX = Math.max(0, (state.mapZoom - 1) * width * 0.5);
+  const maxOffsetY = Math.max(0, (state.mapZoom - 1) * height * 0.5);
+  state.mapOffsetX = clamp(state.mapOffsetX, -maxOffsetX, maxOffsetX);
+  state.mapOffsetY = clamp(state.mapOffsetY, -maxOffsetY, maxOffsetY);
+}
+
+function currentZoom() {
+  return state.projectionMode === 'map' ? state.mapZoom : state.globeZoom;
+}
+
+function updateZoomControls() {
+  const zoom = currentZoom();
+  zoomTitle.textContent = state.projectionMode === 'map' ? 'Map Zoom' : 'Globe Zoom';
+  zoomSlider.max = String((state.projectionMode === 'map' ? MAX_MAP_ZOOM : MAX_GLOBE_ZOOM) * 100);
+  zoomSlider.value = String(Math.round(zoom * 100));
+  zoomSummary.textContent = state.projectionMode === 'map'
+    ? `${zoom.toFixed(2)}x${zoom > 1 ? ' / drag to pan' : ''}`
+    : `${zoom.toFixed(2)}x / drag to rotate`;
+}
+
+function setMapZoom(nextZoom, anchorX = width * 0.5, anchorY = height * 0.5) {
+  const previousZoom = state.mapZoom;
+  const clampedZoom = clamp(nextZoom, MIN_MAP_ZOOM, MAX_MAP_ZOOM);
+  if (Math.abs(clampedZoom - previousZoom) < 1e-6) return false;
+  const worldX = (anchorX - width * 0.5 - state.mapOffsetX) / previousZoom + width * 0.5;
+  const worldY = (anchorY - height * 0.5 - state.mapOffsetY) / previousZoom + height * 0.5;
+  state.mapZoom = clampedZoom;
+  state.mapOffsetX = anchorX - width * 0.5 - (worldX - width * 0.5) * clampedZoom;
+  state.mapOffsetY = anchorY - height * 0.5 - (worldY - height * 0.5) * clampedZoom;
+  clampMapOffsets();
+  updateZoomControls();
+  return true;
+}
+
+function setGlobeZoom(nextZoom) {
+  const clampedZoom = clamp(nextZoom, MIN_GLOBE_ZOOM, MAX_GLOBE_ZOOM);
+  if (Math.abs(clampedZoom - state.globeZoom) < 1e-6) return false;
+  state.globeZoom = clampedZoom;
+  updateZoomControls();
+  return true;
+}
+
+function setCurrentZoom(nextZoom, anchorX = width * 0.5, anchorY = height * 0.5) {
+  return state.projectionMode === 'map'
+    ? setMapZoom(nextZoom, anchorX, anchorY)
+    : setGlobeZoom(nextZoom);
+}
+
+function stepZoom(direction, anchorX = width * 0.5, anchorY = height * 0.5) {
+  const factor = direction > 0 ? 1.2 : 1 / 1.2;
+  if (setCurrentZoom(currentZoom() * factor, anchorX, anchorY)) draw();
+}
+
+function resetZoom() {
+  if (state.projectionMode === 'map') {
+    state.mapZoom = 1;
+    state.mapOffsetX = 0;
+    state.mapOffsetY = 0;
+  } else {
+    state.globeZoom = 1;
+  }
+  updateZoomControls();
+  draw();
+}
+
+function updateViewButtons() {
+  const compareActive = state.viewMode === 'compare';
+  compareViewBtn.classList.toggle('active', compareActive);
+  dishViewBtn.classList.toggle('active', !compareActive);
+  compareControls.classList.toggle('is-hidden', !compareActive);
+  dishesCard.classList.toggle('is-hidden', compareActive);
+  elazCard.classList.toggle('is-hidden', compareActive);
+}
+
+function invalidateComputedCaches() {
+  state.visibleSatelliteCache = null;
+  state.segmentCache = new WeakMap();
+  state.frameAnalysisCache = new Map();
+}
+
+function refreshVisibleShellKey() {
+  state.visibleShellKey = Array.from(state.visibleShells).sort().join('|');
+}
+
+function buildShellChecks() {
+  for (const shell of DATA.meta.shells) {
+    const row = document.createElement('label');
+    row.className = 'check';
+    row.innerHTML = `<span class="key"><span class="swatch" style="background:${shell.color}"></span><span>${shell.displayName}</span></span><input type="checkbox" checked>`;
+    const input = row.querySelector('input');
+    input.addEventListener('change', () => {
+      if (input.checked) state.visibleShells.add(shell.shellId);
+      else state.visibleShells.delete(shell.shellId);
+      refreshVisibleShellKey();
+      invalidateComputedCaches();
+      draw();
+    });
+    shellChecks.appendChild(row);
+  }
+}
+
+function frameTimeMs(frame) {
+  const maxIndex = state.frameTimesMs.length - 1;
+  const leftIndex = Math.max(0, Math.min(maxIndex, Math.floor(frame)));
+  const rightIndex = Math.max(0, Math.min(maxIndex, Math.ceil(frame)));
+  const fraction = Math.max(0, Math.min(1, frame - leftIndex));
+  const leftMs = state.frameTimesMs[leftIndex];
+  const rightMs = state.frameTimesMs[rightIndex];
+  return leftMs + (rightMs - leftMs) * fraction;
+}
+
+function frameForTimeMs(targetMs) {
+  if (targetMs <= state.frameStartMs) return 0;
+  if (targetMs >= state.frameEndMs) return Math.max(0, state.frameTimesMs.length - 1);
+  return (targetMs - state.frameStartMs) / state.frameStepMs;
+}
+
+function skipLeadMs() {
+  return Math.max(60000, state.frameStepMs * 0.2);
+}
+
+function launchHighlightMs() {
+  return 2 * 60 * 1000;
+}
+
+function decayHighlightMs() {
+  return 2 * 60 * 1000;
+}
+
+function loadChunk(chunkId) {
+  if (CHUNKS[chunkId]) return Promise.resolve(CHUNKS[chunkId]);
+  const event = DATA.events.find(item => item.chunkId === chunkId);
+  if (!event) return Promise.reject(new Error(`Unknown chunk ${chunkId}`));
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = event.chunkPath;
+    script.onload = () => {
+      if (CHUNKS[chunkId]) resolve(CHUNKS[chunkId]);
+      else reject(new Error(`Chunk ${chunkId} did not register itself`));
+    };
+    script.onerror = () => reject(new Error(`Failed to load ${event.chunkPath}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function activateChunk(chunkId, targetMs = null) {
+  const chunk = await loadChunk(chunkId);
+  WINDOW_STATE.data = chunk;
+  normalizeSatellites(DATA.satellites);
+  refreshFrameCache();
+  invalidateComputedCaches();
+  state.highlightTimeMs = chunk.highlightTimeUtc ? Date.parse(chunk.highlightTimeUtc) : null;
+  state.highlightNorads = new Set(chunk.highlightNorads || []);
+  frameSlider.max = String(Math.max(0, DATA.frames.length - 1));
+  currentFrame = targetMs == null ? frameForTimeMs(Date.parse(chunk.focusUtc)) : frameForTimeMs(targetMs);
+  frameSlider.value = Math.round(currentFrame).toString();
+  draw();
+}
+
+function preloadChunk(chunkId) {
+  if (!chunkId || CHUNKS[chunkId]) return;
+  loadChunk(chunkId).catch(() => {});
+}
+
+function findNextEvent(events, currentMs) {
+  return events.find(event => event.timeMs > currentMs + 1) || null;
+}
+
+function eventLabel(event) {
+  return `${new Date(event.timeMs).toISOString()} / ${event.label}`;
+}
+
+function updateEventControls(currentMs) {
+  const nextLaunch = findNextEvent(state.events.launches, currentMs);
+  const nextDecay = findNextEvent(state.events.decays, currentMs);
+  nextLaunchBtn.disabled = !nextLaunch;
+  nextDecayBtn.disabled = !nextDecay;
+  if (!nextLaunch && !nextDecay) {
+    eventSummaryEl.textContent = 'No future launch or decay event remains in the local manifest.';
+    return;
+  }
+  const parts = [];
+  if (nextLaunch) parts.push(`Launch: ${eventLabel(nextLaunch)}`);
+  if (nextDecay) parts.push(`Decay: ${eventLabel(nextDecay)}`);
+  eventSummaryEl.textContent = parts.join(' | ');
+  preloadChunk(nextLaunch && nextLaunch.chunkId);
+  preloadChunk(nextDecay && nextDecay.chunkId);
+}
+
+async function jumpToNextEvent(type) {
+  const currentMs = frameTimeMs(currentFrame);
+  const events = type === 'launch' ? state.events.launches : state.events.decays;
+  const event = findNextEvent(events, currentMs);
+  if (!event) return;
+  const leadMs = type === 'launch'
+    ? skipLeadMs()
+    : Math.min(skipLeadMs(), decayHighlightMs() * 0.8);
+  await activateChunk(event.chunkId, event.timeMs - leadMs);
+  playing = true;
+  playPause.textContent = 'Pause';
+}
+
+function resize() {
+  dpr = Math.max(1, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  width = Math.max(640, Math.round(rect.width));
+  height = Math.max(420, Math.round(rect.height));
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  clampMapOffsets();
+  updateZoomControls();
+  draw();
+}
+
+function wrapLon(lon) {
+  let value = lon;
+  while (value < -180) value += 360;
+  while (value > 180) value -= 360;
+  return value;
+}
+
+function lerpLon(a, b, t) {
+  const delta = ((b - a + 540) % 360) - 180;
+  return wrapLon(a + delta * t);
+}
+
+function latLonToUnit(lat, lon) {
+  const latRad = lat * Math.PI / 180;
+  const lonRad = lon * Math.PI / 180;
+  const cosLat = Math.cos(latRad);
+  return {
+    x: cosLat * Math.cos(lonRad),
+    y: cosLat * Math.sin(lonRad),
+    z: Math.sin(latRad),
+  };
+}
+
+function normalizeVec(vec) {
+  const norm = Math.hypot(vec.x, vec.y, vec.z) || 1;
+  return { x: vec.x / norm, y: vec.y / norm, z: vec.z / norm };
+}
+
+function crossVec(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function dotVec(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function slerpUnit(a, b, t) {
+  let dot = Math.max(-1, Math.min(1, dotVec(a, b)));
+  if (dot > 0.9995 || dot < -0.9995) {
+    return normalizeVec({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
+  }
+  const omega = Math.acos(dot);
+  const sinOmega = Math.sin(omega);
+  const scaleA = Math.sin((1 - t) * omega) / sinOmega;
+  const scaleB = Math.sin(t * omega) / sinOmega;
+  return {
+    x: a.x * scaleA + b.x * scaleB,
+    y: a.y * scaleA + b.y * scaleB,
+    z: a.z * scaleA + b.z * scaleB,
+  };
+}
+
+function unitToLatLon(vec) {
+  const unit = normalizeVec(vec);
+  return {
+    lat: Math.asin(Math.max(-1, Math.min(1, unit.z))) * 180 / Math.PI,
+    lon: wrapLon(Math.atan2(unit.y, unit.x) * 180 / Math.PI),
+  };
+}
+
+function greatCirclePoint(left, right, t) {
+  const leftVec = latLonToUnit(left[0], left[1]);
+  const rightVec = latLonToUnit(right[0], right[1]);
+  const pointVec = slerpUnit(leftVec, rightVec, t);
+  const point = unitToLatLon(pointVec);
+  return {
+    lat: point.lat,
+    lon: point.lon,
+    alt: left[2] + (right[2] - left[2]) * t,
+  };
+}
+
+function greatCircleDistance(left, right) {
+  const leftVec = latLonToUnit(left[0], left[1]);
+  const rightVec = latLonToUnit(right[0], right[1]);
+  return Math.acos(Math.max(-1, Math.min(1, dotVec(leftVec, rightVec))));
+}
+
+function interpolatePosition(positions, frame) {
+  const maxIndex = positions.length - 1;
+  const leftIndex = Math.max(0, Math.min(maxIndex, Math.floor(frame)));
+  const rightIndex = Math.max(0, Math.min(maxIndex, Math.ceil(frame)));
+  const fraction = Math.max(0, Math.min(1, frame - leftIndex));
+  const left = positions[leftIndex];
+  const right = positions[rightIndex];
+  const point = leftIndex === rightIndex
+    ? { lat: left[0], lon: left[1], alt: left[2] }
+    : greatCirclePoint(left, right, fraction);
+  return {
+    lat: point.lat,
+    lon: point.lon,
+    alt: point.alt,
+    leftIndex,
+    rightIndex,
+    left,
+    right,
+  };
+}
+
+function project(lat, lon) {
+  const baseX = (wrapLon(lon) + 180) / 360 * width;
+  const baseY = (90 - lat) / 180 * height;
+  return {
+    x: (baseX - width * 0.5) * state.mapZoom + width * 0.5 + state.mapOffsetX,
+    y: (baseY - height * 0.5) * state.mapZoom + height * 0.5 + state.mapOffsetY,
+  };
+}
+
+function globeLayout() {
+  return {
+    cx: width * 0.5,
+    cy: height * 0.5,
+    radius: Math.min(width, height) * 0.34 * state.globeZoom,
+  };
+}
+
+function globeVector(lat, lon, alt) {
+  const latRad = lat * Math.PI / 180;
+  const lonRad = lon * Math.PI / 180;
+  const radius = 1 + alt / 6378.137;
+  const cosLat = Math.cos(latRad);
+  return {
+    x: radius * cosLat * Math.cos(lonRad),
+    y: radius * Math.sin(latRad),
+    z: radius * cosLat * Math.sin(lonRad),
+  };
+}
+
+function rotateGlobe(vec) {
+  const cy = Math.cos(state.globeYaw);
+  const sy = Math.sin(state.globeYaw);
+  const cp = Math.cos(state.globePitch);
+  const sp = Math.sin(state.globePitch);
+  const x1 = cy * vec.x + sy * vec.z;
+  const z1 = -sy * vec.x + cy * vec.z;
+  const y2 = cp * vec.y - sp * z1;
+  const z2 = sp * vec.y + cp * z1;
+  return { x: x1, y: y2, z: z2 };
+}
+
+function projectGlobe(lat, lon, alt = 0) {
+  const layout = globeLayout();
+  const rotated = rotateGlobe(globeVector(lat, lon, alt));
+  return {
+    x: layout.cx - rotated.x * layout.radius,
+    y: layout.cy - rotated.y * layout.radius,
+    z: rotated.z,
+    layout,
+  };
+}
+
+function projectGlobeVector(vec) {
+  const layout = globeLayout();
+  const rotated = rotateGlobe(vec);
+  return {
+    x: layout.cx - rotated.x * layout.radius,
+    y: layout.cy - rotated.y * layout.radius,
+    z: rotated.z,
+    layout,
+  };
+}
+
+function drawGlobeBackdrop() {
+  const layout = globeLayout();
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, '#14283c');
+  gradient.addColorStop(0.6, '#09131d');
+  gradient.addColorStop(1, '#050a12');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  const globeGradient = ctx.createRadialGradient(
+    layout.cx - layout.radius * 0.22,
+    layout.cy - layout.radius * 0.34,
+    layout.radius * 0.10,
+    layout.cx,
+    layout.cy,
+    layout.radius
+  );
+  globeGradient.addColorStop(0, 'rgba(74,138,195,0.95)');
+  globeGradient.addColorStop(0.58, 'rgba(18,62,98,0.98)');
+  globeGradient.addColorStop(1, 'rgba(5,16,30,1)');
+  ctx.fillStyle = globeGradient;
+  ctx.beginPath();
+  ctx.arc(layout.cx, layout.cy, layout.radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(160,196,226,0.18)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(layout.cx, layout.cy, layout.radius, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function strokeGlobePolyline(samples, color, lineWidth = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  let started = false;
+  ctx.beginPath();
+  for (const sample of samples) {
+    const projected = projectGlobe(sample.lat, sample.lon, sample.alt || 0);
+    if (projected.z <= 0) {
+      if (started) {
+        ctx.stroke();
+        ctx.beginPath();
+        started = false;
+      }
+      continue;
+    }
+    if (!started) {
+      ctx.moveTo(projected.x, projected.y);
+      started = true;
+    } else {
+      ctx.lineTo(projected.x, projected.y);
+    }
+  }
+  if (started) ctx.stroke();
+}
+
+function strokeGlobeVectorPolyline(samples, color, lineWidth = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  let started = false;
+  ctx.beginPath();
+  for (const sample of samples) {
+    const projected = projectGlobeVector(sample);
+    if (projected.z <= 0) {
+      if (started) {
+        ctx.stroke();
+        ctx.beginPath();
+        started = false;
+      }
+      continue;
+    }
+    if (!started) {
+      ctx.moveTo(projected.x, projected.y);
+      started = true;
+    } else {
+      ctx.lineTo(projected.x, projected.y);
+    }
+  }
+  if (started) ctx.stroke();
+}
+
+function drawGlobeGraticule() {
+  const samples = [];
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const line = [];
+    for (let lon = -180; lon <= 180; lon += 5) {
+      line.push({ lat, lon, alt: 0 });
+    }
+    samples.push(line);
+  }
+  for (let lon = -150; lon <= 180; lon += 30) {
+    const line = [];
+    for (let lat = -90; lat <= 90; lat += 4) {
+      line.push({ lat, lon, alt: 0 });
+    }
+    samples.push(line);
+  }
+  for (const line of samples) {
+    strokeGlobePolyline(line, 'rgba(134,173,206,0.20)');
+  }
+}
+
+function drawBackground() {
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, '#18334b');
+  gradient.addColorStop(0.45, '#0d1826');
+  gradient.addColorStop(1, '#08101a');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = 'rgba(125,164,199,0.08)';
+  for (let lon = -150; lon <= 180; lon += 30) {
+    const x = project(0, lon).x;
+    ctx.fillRect(x, 0, 1, height);
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const y = project(lat, 0).y;
+    ctx.fillRect(0, y, width, 1);
+  }
+}
+
+function hexToRgba(hex, alpha) {
+  const value = hex.replace('#', '');
+  const expanded = value.length === 3
+    ? value.split('').map(item => item + item).join('')
+    : value;
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+  return `rgba(${red},${green},${blue},${alpha})`;
+}
+
+function minElevationCosCentralAngle(altKm) {
+  const orbitalRadius = EARTH_RADIUS_KM + Math.max(0, altKm);
+  const ratio = EARTH_RADIUS_KM / orbitalRadius;
+  const sinElevation = Math.sin(MIN_ELEVATION_RAD);
+  const cosElevation = Math.cos(MIN_ELEVATION_RAD);
+  const cosSquared = cosElevation * cosElevation;
+  return Math.max(-1, Math.min(1,
+    ratio * cosSquared + sinElevation * Math.sqrt(Math.max(0, 1 - ratio * ratio * cosSquared))
+  ));
+}
+
+function buildCoverageSamples(lat, lon, altKm) {
+  const angularRadius = Math.acos(minElevationCosCentralAngle(altKm));
+  const center = latLonToUnit(lat, lon);
+  const north = { x: 0, y: 0, z: 1 };
+  let east = crossVec(north, center);
+  if (Math.hypot(east.x, east.y, east.z) < 1e-6) {
+    east = crossVec({ x: 1, y: 0, z: 0 }, center);
+  }
+  east = normalizeVec(east);
+  const up = normalizeVec(crossVec(center, east));
+  const samples = [];
+  const steps = Math.max(48, Math.ceil((angularRadius * 180 / Math.PI) * 2.2));
+  const cosRadius = Math.cos(angularRadius);
+  const sinRadius = Math.sin(angularRadius);
+  for (let step = 0; step <= steps; step += 1) {
+    const azimuth = step / steps * Math.PI * 2;
+    const tangentScaleCos = Math.cos(azimuth) * sinRadius;
+    const tangentScaleSin = Math.sin(azimuth) * sinRadius;
+    const point = {
+      x: center.x * cosRadius + east.x * tangentScaleCos + up.x * tangentScaleSin,
+      y: center.y * cosRadius + east.y * tangentScaleCos + up.y * tangentScaleSin,
+      z: center.z * cosRadius + east.z * tangentScaleCos + up.z * tangentScaleSin,
+    };
+    const latLon = unitToLatLon(point);
+    samples.push({ lat: latLon.lat, lon: latLon.lon, alt: 0 });
+  }
+  return samples;
+}
+
+function defaultHoverText() {
+  if (state.projectionMode === 'globe') {
+    return state.viewMode === 'dish'
+      ? 'Wheel to zoom. Drag to rotate the globe. Move the pointer near a front-side satellite or dish.'
+      : 'Wheel to zoom. Drag to rotate the globe. Move the pointer near a front-side satellite.';
+  }
+  return state.viewMode === 'dish'
+    ? 'Wheel to zoom. Drag to pan when zoomed in. Move the pointer near a satellite or dish.'
+    : 'Wheel to zoom. Drag to pan when zoomed in. Move the pointer near a satellite.';
+}
+
+function frameAnalysisKey(frame) {
+  const leftIndex = Math.max(0, Math.floor(frame));
+  const rightIndex = Math.min(DATA.frames.length - 1, Math.ceil(frame));
+  const fraction = Math.round(Math.max(0, Math.min(1, frame - leftIndex)) * 20) / 20;
+  return `${WINDOW_STATE.data.chunkId}:${leftIndex}:${rightIndex}:${fraction.toFixed(2)}:${state.visibleShellKey}`;
+}
+
+function rememberFrameAnalysis(key, analysis) {
+  state.frameAnalysisCache.set(key, analysis);
+  if (state.frameAnalysisCache.size <= 12) return;
+  const firstKey = state.frameAnalysisCache.keys().next().value;
+  state.frameAnalysisCache.delete(firstKey);
+}
+
+function computeFrameAnalysis(frame) {
+  const currentMs = frameTimeMs(frame);
+  const dishes = activeDishes();
+  const group1 = new Uint16Array(DATA.cells.length);
+  const group4 = new Uint16Array(DATA.cells.length);
+  const links = [];
+  const linkedSatelliteCounts = new Map();
+  const linkedDishes = new Map(dishes.map(dish => [dish.id, 0]));
+  const connectedSatellites = [];
+
+  for (const satellite of DATA.satellites) {
+    const lifecycle = satelliteLifecycle(satellite, currentMs);
+    if (!lifecycle.visible) continue;
+    const point = interpolatePosition(satellite.positions, frame);
+    const subpointUnit = latLonToUnit(point.lat, point.lon);
+    const cosLimit = minElevationCosCentralAngle(point.alt);
+
+    if (satellite.shellId === 'group1' || satellite.shellId === 'group4') {
+      const bucket = satellite.shellId === 'group1' ? group1 : group4;
+      for (const cellPoint of CELL_POINTS) {
+        if (dotVec(subpointUnit, cellPoint.unit) >= cosLimit) {
+          bucket[cellPoint.index] += 1;
+        }
+      }
+    }
+
+    if (!state.visibleShells.has(satellite.shellId)) continue;
+    let dishCount = 0;
+    for (const dish of dishes) {
+      if (dotVec(subpointUnit, dish.unit) < cosLimit) continue;
+      dishCount += 1;
+      linkedDishes.set(dish.id, (linkedDishes.get(dish.id) || 0) + 1);
+      links.push({ dish, satellite, point });
+    }
+    if (!dishCount) continue;
+    linkedSatelliteCounts.set(satellite.norad, dishCount);
+    connectedSatellites.push({
+      satellite,
+      point,
+      dishCount,
+      coverageSamples: buildCoverageSamples(point.lat, point.lon, point.alt),
+    });
+  }
+
+  return {
+    group1,
+    group4,
+    links,
+    linkedDishes,
+    linkedSatelliteCounts,
+    connectedSatellites,
+  };
+}
+
+function getFrameAnalysis(frame) {
+  const key = frameAnalysisKey(frame);
+  const cached = state.frameAnalysisCache.get(key);
+  if (cached) return cached;
+  const analysis = computeFrameAnalysis(frame);
+  rememberFrameAnalysis(key, analysis);
+  return analysis;
+}
+
+function heatValue(analysis, cellIndex, mode) {
+  if (mode === 'off') return 0;
+  return mode === 'diff'
+    ? analysis.group1[cellIndex] - analysis.group4[cellIndex]
+    : analysis[mode][cellIndex];
+}
+
+function heatColor(value, mode, peak) {
+  if (mode === 'off') return null;
+  if (mode === 'diff') {
+    const maxAbs = Math.max(1, peak);
+    const norm = Math.max(-1, Math.min(1, value / maxAbs));
+    if (Math.abs(norm) < 0.03) return 'rgba(0,0,0,0)';
+    const alpha = 0.14 + Math.abs(norm) * 0.56;
+    return norm >= 0
+      ? `rgba(255,179,92,${alpha.toFixed(3)})`
+      : `rgba(102,217,255,${alpha.toFixed(3)})`;
+  }
+  const norm = Math.max(0, Math.min(1, value / Math.max(1, peak)));
+  const alpha = 0.08 + norm * 0.52;
+  return mode === 'group1'
+    ? `rgba(102,217,255,${alpha.toFixed(3)})`
+    : `rgba(255,179,92,${alpha.toFixed(3)})`;
+}
+
+function updateLegend(mode, peak, analysis = null) {
+  if (state.projectionMode === 'globe') {
+    legendTitleEl.textContent = state.viewMode === 'dish' ? 'Dish View' : 'Heatmap Legend';
+    legendBarEl.style.background = 'linear-gradient(90deg,#0f1724,#2a4058)';
+    legendMinEl.textContent = state.viewMode === 'dish' ? 'front-side view' : 'map only';
+    legendMidEl.textContent = '';
+    legendMaxEl.textContent = '';
+    legendNoteEl.textContent = state.viewMode === 'dish'
+      ? `Dish peer lines and ${MIN_ELEVATION_DEG}° coverage footprints are drawn on the globe for the visible hemisphere.`
+      : `Heatmap colors are shown only in map projection and use a ${MIN_ELEVATION_DEG}° minimum elevation rule.`;
+    return;
+  }
+
+  if (state.viewMode === 'dish') {
+    const linkedSatellites = analysis ? analysis.connectedSatellites.length : 0;
+    legendTitleEl.textContent = 'Dish Connectivity';
+    legendBarEl.style.background = 'linear-gradient(90deg, rgba(156,245,216,0.14), rgba(156,245,216,0.92))';
+    legendMinEl.textContent = `${activeDishes().length} dishes`;
+    legendMidEl.textContent = `>= ${MIN_ELEVATION_DEG}° elev`;
+    legendMaxEl.textContent = `${linkedSatellites} linked sats`;
+    legendNoteEl.textContent = `Lines connect each dish to every visible satellite. Outlines show the ${MIN_ELEVATION_DEG}° coverage footprint of satellites that currently peer with at least one dish.`;
+    return;
+  }
+
+  if (mode === 'off') {
+    legendTitleEl.textContent = 'Heatmap Legend';
+    legendBarEl.style.background = 'linear-gradient(90deg,#0f1724,#2a4058)';
+    legendMinEl.textContent = 'off';
+    legendMidEl.textContent = '';
+    legendMaxEl.textContent = '';
+    legendNoteEl.textContent = 'Heatmap shading is disabled.';
+    return;
+  }
+
+  if (mode === 'diff') {
+    legendTitleEl.textContent = 'Heatmap Legend';
+    legendBarEl.style.background = 'linear-gradient(90deg,#66d9ff,#122030 50%,#ffb35c)';
+    legendMinEl.textContent = `Group 4 > Group 1 (-${peak.toFixed(1)})`;
+    legendMidEl.textContent = 'equal (0)';
+    legendMaxEl.textContent = `Group 1 > Group 4 (+${peak.toFixed(1)})`;
+    legendNoteEl.textContent = `Blue means Group 4 has more visible satellites in that cell. Orange means Group 1 has more, both using a ${MIN_ELEVATION_DEG}° minimum elevation rule.`;
+    return;
+  }
+
+  const shellLabel = mode === 'group1' ? 'Group 1' : 'Group 4';
+  const shellColor = mode === 'group1' ? '#66d9ff' : '#ffb35c';
+  legendTitleEl.textContent = `${shellLabel} Heatmap`;
+  legendBarEl.style.background = `linear-gradient(90deg, rgba(18,32,48,0.95), ${shellColor})`;
+  legendMinEl.textContent = '0';
+  legendMidEl.textContent = `${(peak * 0.5).toFixed(0)}`;
+  legendMaxEl.textContent = `${peak.toFixed(0)}`;
+  legendNoteEl.textContent = `${shellLabel} visible-satellite count for the current frame with a ${MIN_ELEVATION_DEG}° minimum elevation rule.`;
+}
+
+function drawHeatmap(frame) {
+  const analysis = getFrameAnalysis(frame);
+  const mode = heatmapMode.value;
+  let peak = 0;
+  for (let cellIndex = 0; cellIndex < DATA.cells.length; cellIndex += 1) {
+    const value = heatValue(analysis, cellIndex, mode);
+    peak = mode === 'diff' ? Math.max(peak, Math.abs(value)) : Math.max(peak, value);
+  }
+  cellPeakLabelEl.textContent = 'Peak Cell Count';
+  cellPeakEl.textContent = peak.toFixed(mode === 'diff' ? 1 : 0);
+  modePill.textContent = mode === 'diff'
+    ? `Compare: diff (${MIN_ELEVATION_DEG}° min elevation)`
+    : mode === 'group1'
+      ? `Compare: Group 1 (${MIN_ELEVATION_DEG}° min elevation)`
+      : mode === 'group4'
+        ? `Compare: Group 4 (${MIN_ELEVATION_DEG}° min elevation)`
+        : 'Compare: heatmap off';
+  updateLegend(mode, peak, analysis);
+
+  for (let cellIndex = 0; cellIndex < DATA.cells.length; cellIndex += 1) {
+    const cell = DATA.cells[cellIndex];
+    const value = heatValue(analysis, cellIndex, mode);
+    const color = heatColor(value, mode, peak);
+    if (!color) continue;
+    const topLeft = project(cell[1], cell[2]);
+    const bottomRight = project(cell[0], cell[3]);
+    ctx.fillStyle = color;
+    ctx.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+  }
+}
+
+function satelliteLifecycle(satellite, currentMs) {
+  if (Number.isFinite(satellite.launchMs) && currentMs < satellite.launchMs) {
+    return { visible: false, highlight: false, phase: 'prelaunch' };
+  }
+  if (Number.isFinite(satellite.decayMs) && currentMs >= satellite.decayMs) {
+    return { visible: false, highlight: false, phase: 'postdecay' };
+  }
+  const launchHighlight = WINDOW_STATE.data.eventType === 'launch'
+    && state.highlightNorads.has(satellite.norad)
+    && Number.isFinite(state.highlightTimeMs)
+    && currentMs >= state.highlightTimeMs
+    && currentMs < state.highlightTimeMs + launchHighlightMs();
+  const decayHighlight = WINDOW_STATE.data.eventType === 'decay'
+    && state.highlightNorads.has(satellite.norad)
+    && Number.isFinite(state.highlightTimeMs)
+    && currentMs >= state.highlightTimeMs - decayHighlightMs()
+    && currentMs < state.highlightTimeMs;
+  return {
+    visible: true,
+    highlight: launchHighlight || decayHighlight,
+    phase: decayHighlight ? 'decay' : launchHighlight ? 'launch' : 'steady',
+  };
+}
+
+function visibleSatellites() {
+  if (state.visibleSatelliteCache) return state.visibleSatelliteCache;
+  state.visibleSatelliteCache = DATA.satellites.filter(item => state.visibleShells.has(item.shellId));
+  return state.visibleSatelliteCache;
+}
+
+function buildSegmentSamples(left, right) {
+  if (left[0] === right[0] && left[1] === right[1]) return [];
+  const distanceDeg = greatCircleDistance(left, right) * 180 / Math.PI;
+  const steps = Math.max(8, Math.ceil(distanceDeg / 2));
+  const samples = [];
+  for (let step = 0; step <= steps; step += 1) {
+    const point = greatCirclePoint(left, right, step / steps);
+    samples.push({ lat: point.lat, lon: point.lon, alt: 0 });
+  }
+  return samples;
+}
+
+function buildSpaceLinkSamples(dish, point) {
+  const start = globeVector(dish.lat, dish.lon, 0);
+  const end = globeVector(point.lat, point.lon, point.alt);
+  const steps = 24;
+  const samples = [];
+  for (let step = 0; step <= steps; step += 1) {
+    const t = step / steps;
+    samples.push({
+      x: start.x + (end.x - start.x) * t,
+      y: start.y + (end.y - start.y) * t,
+      z: start.z + (end.z - start.z) * t,
+    });
+  }
+  return samples;
+}
+
+function getSegmentSamples(satellite, left, right, leftIndex, rightIndex) {
+  if (leftIndex === rightIndex) return [];
+  let cache = state.segmentCache.get(satellite);
+  if (!cache) {
+    cache = new Map();
+    state.segmentCache.set(satellite, cache);
+  }
+  const key = `${leftIndex}:${rightIndex}`;
+  let samples = cache.get(key);
+  if (!samples) {
+    samples = buildSegmentSamples(left, right);
+    cache.set(key, samples);
+  }
+  return samples;
+}
+
+function drawGeodesicSegment(samples, color, lineWidth = 1) {
+  if (!samples.length) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  let previous = null;
+  let open = false;
+  for (const sample of samples) {
+    const projected = project(sample.lat, sample.lon);
+    if (!previous || Math.abs(projected.x - previous.x) > width * 0.5) {
+      if (open) ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(projected.x, projected.y);
+      open = true;
+    } else {
+      ctx.lineTo(projected.x, projected.y);
+    }
+    previous = projected;
+  }
+  if (open) ctx.stroke();
+}
+
+function drawGlobeGeodesicSegment(samples, color, lineWidth = 1) {
+  if (!samples.length) return;
+  strokeGlobePolyline(samples, color, lineWidth);
+}
+
+function pickDishAtCanvasPoint(x, y) {
+  let best = null;
+  const threshold = state.projectionMode === 'globe' ? 16 : 14;
+  for (const dish of activeDishes()) {
+    const projected = state.projectionMode === 'globe'
+      ? projectGlobe(dish.lat, dish.lon, 0)
+      : project(dish.lat, dish.lon);
+    if (state.projectionMode === 'globe' && projected.z <= 0) continue;
+    const distance = Math.hypot(x - projected.x, y - projected.y);
+    if (distance > threshold) continue;
+    if (!best || distance < best.distance) best = { dish, distance };
+  }
+  return best ? best.dish : null;
+}
+
+function buildSelectedDishTracks(frame, analysis) {
+  const dish = selectedDish();
+  if (!dish) return [];
+  const linkedNorads = new Set(
+    analysis.links
+      .filter(link => link.dish.id === dish.id)
+      .map(link => link.satellite.norad)
+  );
+  if (!linkedNorads.size) return [];
+
+  const startFrame = Math.max(0, frame);
+  const startIndex = Math.max(0, Math.ceil(startFrame));
+  const tracks = [];
+  for (const satellite of visibleSatellites()) {
+    if (!linkedNorads.has(satellite.norad)) continue;
+    const samples = [];
+    const currentPoint = interpolatePosition(satellite.positions, startFrame);
+    const currentLook = computeLookAngles(dish, currentPoint);
+    if (currentLook.el >= MIN_ELEVATION_DEG) {
+      samples.push({
+        az: currentLook.az,
+        el: currentLook.el,
+        timeMs: frameTimeMs(startFrame),
+      });
+    }
+    for (let index = startIndex; index < DATA.frames.length; index += 1) {
+      const lifecycle = satelliteLifecycle(satellite, state.frameTimesMs[index]);
+      if (!lifecycle.visible) continue;
+      const point = interpolatePosition(satellite.positions, index);
+      const look = computeLookAngles(dish, point);
+      if (look.el < MIN_ELEVATION_DEG) {
+        if (samples.length) break;
+        continue;
+      }
+      samples.push({
+        az: look.az,
+        el: look.el,
+        timeMs: state.frameTimesMs[index],
+      });
+    }
+    if (samples.length) tracks.push({ satellite, samples });
+  }
+  return tracks;
+}
+
+function drawElAzChart(frame) {
+  const rect = elazCanvas.getBoundingClientRect();
+  const chartWidth = Math.max(260, Math.round(rect.width || 320));
+  const chartHeight = Math.max(220, Math.round(rect.height || 240));
+  elazCanvas.width = Math.round(chartWidth * dpr);
+  elazCanvas.height = Math.round(chartHeight * dpr);
+  elazCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  elazCtx.clearRect(0, 0, chartWidth, chartHeight);
+
+  const dish = selectedDish();
+  if (!dish) {
+    elazSummary.textContent = 'Select a dish to generate EL/AZ look angles from the current time forward.';
+    return;
+  }
+
+  const analysis = getFrameAnalysis(frame);
+  const tracks = buildSelectedDishTracks(frame, analysis);
+  const padding = { top: 16, right: 16, bottom: 28, left: 38 };
+  const plotWidth = chartWidth - padding.left - padding.right;
+  const plotHeight = chartHeight - padding.top - padding.bottom;
+
+  elazCtx.fillStyle = '#0b1420';
+  elazCtx.fillRect(0, 0, chartWidth, chartHeight);
+  elazCtx.strokeStyle = 'rgba(102,132,156,0.24)';
+  elazCtx.lineWidth = 1;
+
+  for (const azTick of [0, 90, 180, 270, 360]) {
+    const x = padding.left + plotWidth * (azTick / 360);
+    elazCtx.beginPath();
+    elazCtx.moveTo(x, padding.top);
+    elazCtx.lineTo(x, padding.top + plotHeight);
+    elazCtx.stroke();
+    elazCtx.fillStyle = 'rgba(190,214,232,0.7)';
+    elazCtx.font = '600 10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    elazCtx.fillText(String(azTick), x - (azTick === 360 ? 18 : 8), chartHeight - 8);
+  }
+  for (const elTick of [0, 30, 60, 90]) {
+    const y = padding.top + plotHeight * (1 - elTick / 90);
+    elazCtx.beginPath();
+    elazCtx.moveTo(padding.left, y);
+    elazCtx.lineTo(padding.left + plotWidth, y);
+    elazCtx.stroke();
+    elazCtx.fillStyle = 'rgba(190,214,232,0.7)';
+    elazCtx.fillText(String(elTick), 10, y + 3);
+  }
+
+  elazCtx.strokeStyle = 'rgba(215,231,243,0.5)';
+  elazCtx.lineWidth = 1.2;
+  elazCtx.strokeRect(padding.left, padding.top, plotWidth, plotHeight);
+  elazCtx.fillStyle = 'rgba(215,231,243,0.82)';
+  elazCtx.fillText('AZ', padding.left + plotWidth * 0.5 - 8, chartHeight - 8);
+  elazCtx.save();
+  elazCtx.translate(14, padding.top + plotHeight * 0.5 + 8);
+  elazCtx.rotate(-Math.PI / 2);
+  elazCtx.fillText('EL', 0, 0);
+  elazCtx.restore();
+
+  for (const track of tracks) {
+    elazCtx.strokeStyle = hexToRgba(track.satellite.color, 0.88);
+    elazCtx.lineWidth = 2;
+    let previous = null;
+    elazCtx.beginPath();
+    track.samples.forEach(sample => {
+      const x = padding.left + plotWidth * (sample.az / 360);
+      const y = padding.top + plotHeight * (1 - sample.el / 90);
+      if (!previous || Math.abs(sample.az - previous.az) > 180) {
+        if (previous) {
+          elazCtx.stroke();
+          elazCtx.beginPath();
+        }
+        elazCtx.moveTo(x, y);
+      } else {
+        elazCtx.lineTo(x, y);
+      }
+      previous = sample;
+    });
+    elazCtx.stroke();
+    const start = track.samples[0];
+    const sx = padding.left + plotWidth * (start.az / 360);
+    const sy = padding.top + plotHeight * (1 - start.el / 90);
+    elazCtx.fillStyle = track.satellite.color;
+    elazCtx.beginPath();
+    elazCtx.arc(sx, sy, 3.2, 0, Math.PI * 2);
+    elazCtx.fill();
+  }
+
+  const startTime = new Date(frameTimeMs(frame)).toISOString();
+  const endTime = new Date(state.frameEndMs).toISOString();
+  elazSummary.textContent = tracks.length
+    ? `${dish.name} / ${tracks.length} linked satellite track${tracks.length === 1 ? '' : 's'} from ${startTime} to ${endTime}. X=AZ, Y=EL.`
+    : `${dish.name} has no linked satellites at ${startTime}.`;
+}
+
+function drawDishLinks(analysis) {
+  for (const linked of analysis.connectedSatellites) {
+    drawGeodesicSegment(
+      linked.coverageSamples,
+      hexToRgba(linked.satellite.color, 0.42),
+      COVERAGE_LINE_WIDTH
+    );
+  }
+  for (const link of analysis.links) {
+    drawGeodesicSegment(
+      buildSegmentSamples(
+        [link.dish.lat, link.dish.lon, 0],
+        [link.point.lat, link.point.lon, 0]
+      ),
+      hexToRgba(link.satellite.color, 0.24),
+      MAP_PEER_LINE_WIDTH
+    );
+  }
+}
+
+function drawGlobeDishLinks(analysis) {
+  for (const linked of analysis.connectedSatellites) {
+    drawGlobeGeodesicSegment(
+      linked.coverageSamples,
+      hexToRgba(linked.satellite.color, 0.42),
+      COVERAGE_LINE_WIDTH
+    );
+  }
+  for (const link of analysis.links) {
+    strokeGlobeVectorPolyline(
+      buildSpaceLinkSamples(link.dish, link.point),
+      hexToRgba(link.satellite.color, 0.34),
+      GLOBE_PEER_LINE_WIDTH
+    );
+  }
+}
+
+function drawDishes(analysis, hovered) {
+  for (const dish of activeDishes()) {
+    const current = project(dish.lat, dish.lon);
+    const linkedCount = analysis.linkedDishes.get(dish.id) || 0;
+    const selected = dish.id === state.selectedDishId;
+    const radius = (linkedCount > 0 ? 4.1 : 3.2) + (selected ? 1.1 : 0);
+    ctx.fillStyle = linkedCount > 0 ? 'rgba(156,245,216,0.98)' : 'rgba(156,245,216,0.46)';
+    ctx.beginPath();
+    ctx.arc(current.x, current.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    if (linkedCount > 0 || selected) {
+      ctx.strokeStyle = selected ? 'rgba(127,215,255,0.95)' : 'rgba(255,255,255,0.82)';
+      ctx.lineWidth = selected ? 1.8 : 1.1;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, radius + (selected ? 3.0 : 2.1), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    const distance = Math.hypot(pointerX - current.x, pointerY - current.y);
+    if (distance < 9 && (!hovered.current || distance < hovered.current.distance)) {
+      hovered.current = { kind: 'dish', dish, current, distance, linkedCount };
+    }
+  }
+}
+
+function drawGlobeDishes(analysis, hovered) {
+  for (const dish of activeDishes()) {
+    const current = projectGlobe(dish.lat, dish.lon, 0);
+    if (current.z <= 0) continue;
+    const linkedCount = analysis.linkedDishes.get(dish.id) || 0;
+    const selected = dish.id === state.selectedDishId;
+    const radius = (linkedCount > 0 ? 4.8 : 3.6) + (selected ? 1.1 : 0);
+    ctx.fillStyle = linkedCount > 0 ? 'rgba(156,245,216,0.98)' : 'rgba(156,245,216,0.44)';
+    ctx.beginPath();
+    ctx.arc(current.x, current.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    if (linkedCount > 0 || selected) {
+      ctx.strokeStyle = selected ? 'rgba(127,215,255,0.95)' : 'rgba(255,255,255,0.84)';
+      ctx.lineWidth = selected ? 1.9 : 1.3;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, radius + (selected ? 3.3 : 2.5), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    const distance = Math.hypot(pointerX - current.x, pointerY - current.y);
+    if (distance < 10 && (!hovered.current || distance < hovered.current.distance)) {
+      hovered.current = { kind: 'dish', dish, current, distance, linkedCount };
+    }
+  }
+}
+
+function drawSatellites(frame, analysis = null) {
+  const satellites = visibleSatellites();
+  const currentMs = frameTimeMs(frame);
+  let displayedSatellites = 0;
+  const hovered = { current: null };
+  for (const satellite of satellites) {
+    const lifecycle = satelliteLifecycle(satellite, currentMs);
+    if (!lifecycle.visible) continue;
+    displayedSatellites += 1;
+    const point = interpolatePosition(satellite.positions, frame);
+    const current = project(point.lat, point.lon);
+    const linkedDishCount = analysis ? (analysis.linkedSatelliteCounts.get(satellite.norad) || 0) : 0;
+    const segmentColor = lifecycle.highlight ? 'rgba(255,244,180,0.95)' : `${satellite.color}55`;
+    drawGeodesicSegment(
+      getSegmentSamples(satellite, point.left, point.right, point.leftIndex, point.rightIndex),
+      segmentColor,
+      lifecycle.highlight ? 2.4 : 1
+    );
+    if (analysis && linkedDishCount > 0) {
+      ctx.strokeStyle = hexToRgba(satellite.color, 0.72);
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, 6.6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (lifecycle.highlight) {
+      ctx.strokeStyle = 'rgba(255,244,180,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, 6.1, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = satellite.color;
+    ctx.beginPath();
+    ctx.arc(current.x, current.y, lifecycle.highlight ? 3.4 : 2.35, 0, Math.PI * 2);
+    ctx.fill();
+    const distance = Math.hypot(pointerX - current.x, pointerY - current.y);
+    if (distance < 8 && (!hovered.current || distance < hovered.current.distance)) {
+      hovered.current = { kind: 'satellite', satellite, point, current, distance, lifecycle, linkedDishCount };
+    }
+  }
+  if (analysis) drawDishes(analysis, hovered);
+  satelliteCountEl.textContent = displayedSatellites.toString();
+  if (hovered.current && hovered.current.kind === 'satellite') {
+    const active = hovered.current;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(active.current.x, active.current.y, 5.2, 0, Math.PI * 2);
+    ctx.stroke();
+    hoverEl.innerHTML = `<strong>${active.satellite.satname}</strong><br>${active.satellite.displayName} / ${active.satellite.groupName}<br>NORAD: ${active.satellite.norad}<br>Lat/Lon: ${active.point.lat.toFixed(2)} deg, ${active.point.lon.toFixed(2)} deg<br>Altitude: ${active.point.alt.toFixed(1)} km${analysis && active.linkedDishCount ? `<br>Linked dishes: ${active.linkedDishCount}` : ''}${active.lifecycle.phase === 'launch' ? '<br><strong>Launch highlight</strong>' : active.lifecycle.phase === 'decay' ? '<br><strong>Decay highlight</strong>' : ''}`;
+  } else if (hovered.current && hovered.current.kind === 'dish') {
+    const active = hovered.current;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(active.current.x, active.current.y, 7.0, 0, Math.PI * 2);
+    ctx.stroke();
+    hoverEl.innerHTML = `<strong>${active.dish.name} Dish</strong><br>Lat/Lon: ${active.dish.lat.toFixed(2)} deg, ${active.dish.lon.toFixed(2)} deg<br>Linked satellites: ${active.linkedCount}<br>Minimum elevation: ${MIN_ELEVATION_DEG}&deg;`;
+  } else {
+    hoverEl.textContent = defaultHoverText();
+  }
+}
+
+function drawGlobe(frame) {
+  drawGlobeBackdrop();
+  drawGlobeGraticule();
+  const analysis = state.viewMode === 'dish' ? getFrameAnalysis(frame) : null;
+  updateLegend(heatmapMode.value, 0, analysis);
+  cellPeakEl.textContent = analysis ? analysis.connectedSatellites.length.toString() : '--';
+  cellPeakLabelEl.textContent = state.viewMode === 'dish' ? 'Linked Satellites' : 'Peak Cell Count';
+  modePill.textContent = state.viewMode === 'dish'
+    ? `Dish links: globe / ${activeDishes().length} dishes / ${MIN_ELEVATION_DEG}° min elevation`
+    : 'Projection: globe';
+  if (analysis) drawGlobeDishLinks(analysis);
+  const satellites = visibleSatellites();
+  const currentMs = frameTimeMs(frame);
+  let displayedSatellites = 0;
+  const hovered = { current: null };
+  for (const satellite of satellites) {
+    const lifecycle = satelliteLifecycle(satellite, currentMs);
+    if (!lifecycle.visible) continue;
+    const point = interpolatePosition(satellite.positions, frame);
+    drawGlobeGeodesicSegment(
+      getSegmentSamples(satellite, point.left, point.right, point.leftIndex, point.rightIndex),
+      lifecycle.highlight ? 'rgba(255,244,180,0.95)' : `${satellite.color}55`,
+      lifecycle.highlight ? 2.4 : 1
+    );
+    const current = projectGlobe(point.lat, point.lon, point.alt);
+    if (current.z <= 0) {
+      continue;
+    }
+    displayedSatellites += 1;
+    const linkedDishCount = analysis ? (analysis.linkedSatelliteCounts.get(satellite.norad) || 0) : 0;
+    const radius = Math.max(1.8, 2.15 + point.alt / 2200) + (lifecycle.highlight ? 1.0 : 0);
+    if (analysis && linkedDishCount > 0) {
+      ctx.strokeStyle = hexToRgba(satellite.color, 0.72);
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, radius + 4.2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (lifecycle.highlight) {
+      ctx.strokeStyle = 'rgba(255,244,180,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, radius + 3.4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = satellite.color;
+    ctx.beginPath();
+    ctx.arc(current.x, current.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    const distance = Math.hypot(pointerX - current.x, pointerY - current.y);
+    if (distance < 10 && (!hovered.current || distance < hovered.current.distance)) {
+      hovered.current = { kind: 'satellite', satellite, point, current, distance, lifecycle, linkedDishCount };
+    }
+  }
+  if (analysis) drawGlobeDishes(analysis, hovered);
+  satelliteCountEl.textContent = displayedSatellites.toString();
+  if (hovered.current && hovered.current.kind === 'satellite') {
+    const active = hovered.current;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(active.current.x, active.current.y, 6.0, 0, Math.PI * 2);
+    ctx.stroke();
+    hoverEl.innerHTML = `<strong>${active.satellite.satname}</strong><br>${active.satellite.displayName} / ${active.satellite.groupName}<br>NORAD: ${active.satellite.norad}<br>Lat/Lon: ${active.point.lat.toFixed(2)} deg, ${active.point.lon.toFixed(2)} deg<br>Altitude: ${active.point.alt.toFixed(1)} km${analysis && active.linkedDishCount ? `<br>Linked dishes: ${active.linkedDishCount}` : ''}${active.lifecycle.phase === 'launch' ? '<br><strong>Launch highlight</strong>' : active.lifecycle.phase === 'decay' ? '<br><strong>Decay highlight</strong>' : ''}`;
+  } else if (hovered.current && hovered.current.kind === 'dish') {
+    const active = hovered.current;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(active.current.x, active.current.y, 7.4, 0, Math.PI * 2);
+    ctx.stroke();
+    hoverEl.innerHTML = `<strong>${active.dish.name} Dish</strong><br>Lat/Lon: ${active.dish.lat.toFixed(2)} deg, ${active.dish.lon.toFixed(2)} deg<br>Linked satellites: ${active.linkedCount}<br>Minimum elevation: ${MIN_ELEVATION_DEG}&deg;`;
+  } else {
+    hoverEl.textContent = defaultHoverText();
+  }
+}
+
+function drawDishView(frame) {
+  const analysis = getFrameAnalysis(frame);
+  cellPeakLabelEl.textContent = 'Linked Satellites';
+  cellPeakEl.textContent = analysis.connectedSatellites.length.toString();
+  modePill.textContent = `Dish links: ${activeDishes().length} dishes / ${MIN_ELEVATION_DEG}° min elevation`;
+  updateLegend(heatmapMode.value, 0, analysis);
+  drawDishLinks(analysis);
+  drawSatellites(frame, analysis);
+}
+
+function drawLabels() {
+  ctx.fillStyle = 'rgba(235,242,247,0.8)';
+  ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  const centerLat = project(0, 0);
+  const west = project(0, -180);
+  const east = project(0, 180);
+  const north = project(60, 0);
+  const south = project(-60, 0);
+  ctx.fillText('180W', west.x + 8, centerLat.y - 6);
+  ctx.fillText('0', centerLat.x + 6, centerLat.y - 6);
+  ctx.fillText('180E', east.x - 46, centerLat.y - 6);
+  ctx.fillText('60N', 10, north.y);
+  ctx.fillText('0', 10, centerLat.y);
+  ctx.fillText('60S', 10, south.y);
+}
+
+function draw() {
+  if (state.projectionMode === 'globe') {
+    drawGlobe(currentFrame);
+  } else {
+    drawBackground();
+    if (state.viewMode === 'compare') drawHeatmap(currentFrame);
+    else drawDishView(currentFrame);
+    drawLabels();
+    if (state.viewMode === 'compare') drawSatellites(currentFrame);
+  }
+  if (state.viewMode === 'dish') drawElAzChart(currentFrame);
+  const currentTime = new Date(frameTimeMs(currentFrame));
+  timePill.textContent = currentTime.toISOString();
+  updateEventControls(currentTime.getTime());
+}
+
+function tick(now) {
+  const deltaSeconds = (now - lastTick) / 1000;
+  lastTick = now;
+  if (playing && DATA.frames.length > 1) {
+    const speedMultiplier = Number(speedSelect.value);
+    currentFrame += deltaSeconds * speedMultiplier / Math.max(1, state.frameStepMs / 1000);
+    const maxFrame = DATA.frames.length - 1;
+    if (currentFrame > maxFrame) {
+      currentFrame = maxFrame;
+      playing = false;
+      playPause.textContent = 'Play';
+    }
+    frameSlider.value = Math.round(currentFrame).toString();
+    draw();
+  }
+  requestAnimationFrame(tick);
+}
+
+playPause.addEventListener('click', () => {
+  playing = !playing;
+  playPause.textContent = playing ? 'Pause' : 'Play';
+});
+zoomOutBtn.addEventListener('click', () => {
+  stepZoom(-1);
+});
+zoomInBtn.addEventListener('click', () => {
+  stepZoom(1);
+});
+zoomResetBtn.addEventListener('click', resetZoom);
+zoomSlider.addEventListener('input', () => {
+  if (setCurrentZoom(Number(zoomSlider.value) / 100)) draw();
+});
+addDishBtn.addEventListener('click', addSelectedDish);
+nextLaunchBtn.addEventListener('click', () => {
+  void jumpToNextEvent('launch');
+});
+nextDecayBtn.addEventListener('click', () => {
+  void jumpToNextEvent('decay');
+});
+projectionToggle.addEventListener('click', () => {
+  state.projectionMode = state.projectionMode === 'map' ? 'globe' : 'map';
+  updateProjectionToggle();
+  updateZoomControls();
+  draw();
+});
+compareViewBtn.addEventListener('click', () => {
+  state.viewMode = 'compare';
+  updateViewButtons();
+  draw();
+});
+dishViewBtn.addEventListener('click', () => {
+  state.viewMode = 'dish';
+  updateViewButtons();
+  draw();
+});
+frameSlider.addEventListener('input', () => {
+  currentFrame = Number(frameSlider.value);
+  draw();
+});
+heatmapMode.addEventListener('change', draw);
+canvas.addEventListener('pointerdown', event => {
+  state.dragging = true;
+  state.dragMoved = false;
+  state.dragMode = state.projectionMode === 'globe'
+    ? 'globe'
+    : state.mapZoom > 1
+      ? 'map'
+      : null;
+  state.dragLastX = event.clientX;
+  state.dragLastY = event.clientY;
+  state.dragStartX = event.clientX;
+  state.dragStartY = event.clientY;
+  if (state.dragMode && canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+});
+canvas.addEventListener('pointermove', event => {
+  const rect = canvas.getBoundingClientRect();
+  pointerX = event.clientX - rect.left;
+  pointerY = event.clientY - rect.top;
+  if (state.dragging && Math.hypot(event.clientX - state.dragStartX, event.clientY - state.dragStartY) > 4) {
+    state.dragMoved = true;
+  }
+  if (state.dragging && state.dragMode === 'globe') {
+    state.globeYaw += (event.clientX - state.dragLastX) * 0.008;
+    state.globePitch += (event.clientY - state.dragLastY) * 0.008;
+    state.globePitch = Math.max(-1.25, Math.min(1.25, state.globePitch));
+    state.dragLastX = event.clientX;
+    state.dragLastY = event.clientY;
+  } else if (state.dragging && state.dragMode === 'map') {
+    state.mapOffsetX += event.clientX - state.dragLastX;
+    state.mapOffsetY += event.clientY - state.dragLastY;
+    clampMapOffsets();
+    state.dragLastX = event.clientX;
+    state.dragLastY = event.clientY;
+  }
+  draw();
+});
+canvas.addEventListener('wheel', event => {
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const anchorX = event.clientX - rect.left;
+  const anchorY = event.clientY - rect.top;
+  stepZoom(event.deltaY < 0 ? 1 : -1, anchorX, anchorY);
+}, { passive: false });
+canvas.addEventListener('pointerup', event => {
+  if (!state.dragMoved && state.viewMode === 'dish') {
+    const rect = canvas.getBoundingClientRect();
+    const dish = pickDishAtCanvasPoint(event.clientX - rect.left, event.clientY - rect.top);
+    if (dish) {
+      setSelectedDish(dish.id);
+      state.dragging = false;
+      state.dragMode = null;
+      state.dragMoved = false;
+      return;
+    }
+  }
+  state.dragging = false;
+  state.dragMode = null;
+  state.dragMoved = false;
+});
+canvas.addEventListener('pointercancel', () => {
+  state.dragging = false;
+  state.dragMode = null;
+  state.dragMoved = false;
+});
+canvas.addEventListener('pointerleave', () => {
+  state.dragging = false;
+  state.dragMode = null;
+  state.dragMoved = false;
+  pointerX = -1e9;
+  pointerY = -1e9;
+  draw();
+});
+window.addEventListener('resize', resize);
+
+frameSlider.max = String(Math.max(0, DATA.frames.length - 1));
+state.events = {
+  launches: DATA.events
+    .filter(item => item.type === 'launch')
+    .map(item => ({ ...item, timeMs: Date.parse(item.timeUtc) }))
+    .sort((left, right) => left.timeMs - right.timeMs),
+  decays: DATA.events
+    .filter(item => item.type === 'decay')
+    .map(item => ({ ...item, timeMs: Date.parse(item.timeUtc) }))
+    .sort((left, right) => left.timeMs - right.timeMs),
+};
+currentFrame = frameForTimeMs(Date.parse(DATA.meta.centerUtc));
+frameSlider.value = Math.round(currentFrame).toString();
+buildShellChecks();
+renderDishManager();
+updateProjectionToggle();
+updateViewButtons();
+updateZoomControls();
+resize();
+requestAnimationFrame(tick);
+</script></body>
+</html>

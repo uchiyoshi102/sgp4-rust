@@ -7,6 +7,8 @@ target/
 starlink-group-1/
 starlink-group-4/
 starlink-groups/
+starlink-space-track-history/
+spacex-leo/
 *.zip
 
 # Generated local exports
@@ -17,6 +19,11 @@ data/starlink_group_stats.csv
 data/starlink_ecef.csv
 data/starlink_group_timelapse.html
 data/starlink_shell_map/
+data/starlink_shell_map_20191120/
+data/starlink_space_track_current.tle
+data/starlink_space_track_history.tle
+data/spacex_leo_catalog.csv
+data/spacex_leo_current.tle
 
 # One-off downloaded CSVs
 starlink44713-44715-from2020-07-16.csv

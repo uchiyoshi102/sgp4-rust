@@ -54,7 +54,11 @@ fn main() -> io::Result<()> {
         write_per_group_catalogs(split_dir, &rows)?;
     }
 
-    eprintln!("Fetched {} STARLINK rows across {} groups.", rows.len(), groups.len());
+    eprintln!(
+        "Fetched {} STARLINK rows across {} groups.",
+        rows.len(),
+        groups.len()
+    );
     eprintln!("Wrote {}", config.output.display());
     Ok(())
 }

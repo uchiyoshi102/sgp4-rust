@@ -1,6 +1,6 @@
 use sgp4::starlink::timeline::{
-    build_timeline_snapshots, compute_group_stats, load_satellite_windows,
-    write_group_stats_csv, write_satellite_windows_csv, write_timeline_html,
+    build_timeline_snapshots, compute_group_stats, load_satellite_windows, write_group_stats_csv,
+    write_satellite_windows_csv, write_timeline_html,
 };
 use std::env;
 use std::fs;

@@ -76,7 +76,11 @@ fn main() -> io::Result<()> {
         fs::create_dir_all(&group_dir)?;
         let stable_csv_path = group_dir.join("starlink_gp_history.csv");
         if config.resume && stable_csv_path.exists() {
-            eprintln!("Skipping completed group {} because {} already exists", group_slug, stable_csv_path.display());
+            eprintln!(
+                "Skipping completed group {} because {} already exists",
+                group_slug,
+                stable_csv_path.display()
+            );
             continue;
         }
         let ids = unique_norad_ids(rows);
@@ -120,7 +124,10 @@ fn parse_args() -> io::Result<Config> {
             }
             "--output-dir" => {
                 output_dir = PathBuf::from(args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "missing value for --output-dir")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value for --output-dir",
+                    )
                 })?);
             }
             "--group" => {
@@ -130,7 +137,10 @@ fn parse_args() -> io::Result<Config> {
             }
             "--start-date" => {
                 start_date = Some(args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "missing value for --start-date")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value for --start-date",
+                    )
                 })?);
             }
             "--end-date" => {
@@ -140,7 +150,10 @@ fn parse_args() -> io::Result<Config> {
             }
             "--chunk-size" => {
                 let value = args.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "missing value for --chunk-size")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value for --chunk-size",
+                    )
                 })?;
                 chunk_size = value.parse::<usize>().map_err(|error| {
                     io::Error::new(
@@ -302,7 +315,11 @@ fn download_chunk_recursive(
             }
             Ok(CsvResponseCheck::Empty) => {
                 let _ = fs::remove_file(&batch_path);
-                eprintln!("Skipped empty batch {} with {} NORAD IDs", batch_number, ids.len());
+                eprintln!(
+                    "Skipped empty batch {} with {} NORAD IDs",
+                    batch_number,
+                    ids.len()
+                );
                 return Ok(());
             }
             Err(error) => {

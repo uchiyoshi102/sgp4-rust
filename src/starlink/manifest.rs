@@ -72,7 +72,11 @@ pub fn load_group_manifest(path: &Path) -> io::Result<Vec<GroupDefinition>> {
         if !seen_slugs.insert(group_slug.clone()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("duplicate group_slug '{}' in {}", group_slug, path.display()),
+                format!(
+                    "duplicate group_slug '{}' in {}",
+                    group_slug,
+                    path.display()
+                ),
             ));
         }
         if !seen_dates.insert(launch_date.clone()) {

@@ -1,8 +1,10 @@
 use crate::sgp4::sgp4::{gstime, jday};
 use crate::sgp4::tle::TLE;
-use crate::starlink::csv::{build_header_map, csv_escape, get_field, parse_csv_line, require_column};
+use crate::starlink::csv::{
+    build_header_map, csv_escape, get_field, parse_csv_line, require_column,
+};
 use crate::starlink::manifest::{load_catalog_rows, CatalogRow};
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
@@ -22,6 +24,12 @@ const MJD_OFFSET: f64 = 2_400_000.5;
 const WGS84_A_KM: f64 = 6378.137;
 const WGS84_F: f64 = 1.0 / 298.257223563;
 const MAX_TLE_AGE_DAYS: i64 = 14;
+const INITIAL_WINDOW_PAST_HOURS: i64 = 6;
+const INITIAL_WINDOW_FUTURE_HOURS: i64 = 6;
+const EVENT_WINDOW_LEAD_MINUTES: i64 = 30;
+const EVENT_WINDOW_FOLLOW_HOURS: i64 = 2;
+const DEFAULT_MAX_GENERATED_LAUNCH_EVENTS: usize = 1;
+const DEFAULT_MAX_GENERATED_DECAY_EVENTS: usize = 1;
 
 #[derive(Debug)]
 struct Config {
@@ -31,9 +39,10 @@ struct Config {
     eop: PathBuf,
     output_dir: PathBuf,
     center_utc: Option<DateTime<Utc>>,
-    hours: i64,
     step_minutes: i64,
     cell_degrees: i32,
+    max_launch_events: usize,
+    max_decay_events: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -122,9 +131,74 @@ struct Cell {
 }
 
 #[derive(Clone, Debug)]
+struct CellGrid {
+    cells: Vec<Cell>,
+    lat_steps: usize,
+    lon_steps: usize,
+    cell_degrees: f64,
+}
+
+#[derive(Clone, Debug)]
 struct FrameCellVisibility {
     group1_counts: Vec<u16>,
     group4_counts: Vec<u16>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FrameContext {
+    frame_utc: DateTime<Utc>,
+    jdut1: f64,
+    lod_seconds: f64,
+    xp_rad: f64,
+    yp_rad: f64,
+}
+
+#[derive(Clone, Debug)]
+struct TimelineEvent {
+    event_id: String,
+    event_type: String,
+    label: String,
+    shell_id: String,
+    group_slug: Option<String>,
+    time_utc: DateTime<Utc>,
+    satellite_count: usize,
+    highlight_norads: Vec<String>,
+    chunk_id: String,
+    chunk_path: String,
+}
+
+#[derive(Clone, Debug)]
+struct WindowChunk {
+    chunk_id: String,
+    label: String,
+    event_type: Option<String>,
+    focus_utc: DateTime<Utc>,
+    start_utc: DateTime<Utc>,
+    end_utc: DateTime<Utc>,
+    highlight_time_utc: Option<DateTime<Utc>>,
+    highlight_norads: Vec<String>,
+    frame_times: Vec<DateTime<Utc>>,
+    tracks: Vec<SatelliteTrack>,
+    visibility: Vec<FrameCellVisibility>,
+}
+
+#[derive(Clone, Debug)]
+struct ChunkRequest {
+    chunk_id: String,
+    label: String,
+    event_type: Option<String>,
+    focus_utc: DateTime<Utc>,
+    selection_utc: DateTime<Utc>,
+    start_utc: DateTime<Utc>,
+    end_utc: DateTime<Utc>,
+    highlight_time_utc: Option<DateTime<Utc>>,
+    highlight_norads: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct HistoryAnalysis {
+    shell_max_epochs: BTreeMap<String, String>,
+    earliest_decay_by_norad: HashMap<String, DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -150,12 +224,6 @@ pub fn run_from_args() -> io::Result<()> {
 }
 
 fn run(config: Config) -> io::Result<()> {
-    if config.hours <= 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--hours must be greater than 0",
-        ));
-    }
     if config.step_minutes <= 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -180,67 +248,96 @@ fn run(config: Config) -> io::Result<()> {
         &config.group4_history_root,
     )?;
 
-    let shell_max_epochs = scan_shell_max_epochs(&datasets)?;
-    let latest_common_utc = determine_latest_common_utc(&shell_max_epochs)?;
+    let history_analysis = analyze_history_inputs(&datasets)?;
+    let latest_common_utc = determine_latest_common_utc(&history_analysis.shell_max_epochs)?;
     let center_utc = config
         .center_utc
         .unwrap_or_else(|| round_down_to_step(latest_common_utc, config.step_minutes));
-    let start_utc = center_utc - Duration::minutes(config.hours * 30);
-    let end_utc = center_utc + Duration::minutes(config.hours * 30);
-    let frame_times = build_frame_times(start_utc, end_utc, config.step_minutes)?;
 
-    eprintln!(
-        "Selecting latest TLEs at or before {}",
-        center_utc.to_rfc3339()
+    let cell_grid = build_cells(config.cell_degrees);
+    let eop_records = load_eop_records(&config.eop)?;
+    let events = build_timeline_events(
+        &datasets,
+        &catalog_rows,
+        &history_analysis.earliest_decay_by_norad,
+    )?;
+    let generated_events = select_generated_events(
+        &events,
+        center_utc,
+        config.max_launch_events,
+        config.max_decay_events,
     );
-    let latest_records = select_latest_tles(&datasets, &catalog_rows, &center_utc)?;
-    let latest_records = filter_active_records(latest_records, center_utc);
-    if latest_records.is_empty() {
+    let mut chunk_requests = Vec::with_capacity(generated_events.len() + 1);
+    chunk_requests.push(build_initial_chunk_request(center_utc));
+    chunk_requests.extend(generated_events.iter().map(build_event_chunk_request));
+    let latest_records_by_request =
+        select_latest_tles_for_requests(&datasets, &catalog_rows, &chunk_requests)?;
+    let mut chunks = build_chunks_from_requests(
+        &chunk_requests,
+        latest_records_by_request,
+        &cell_grid,
+        &eop_records,
+        config.step_minutes,
+    )?;
+    let initial_chunk = chunks.remove(0);
+    if initial_chunk.tracks.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "no TLEs were found for the requested shells",
+            "no TLEs were found for the requested center UTC",
         ));
     }
-
-    let cells = build_cells(config.cell_degrees);
-    let eop_records = load_eop_records(&config.eop)?;
-    let (tracks, visibility) = compute_tracks_and_visibility(
-        &latest_records,
-        &frame_times,
-        &cells,
-        &eop_records,
-    )?;
-    let shell_info = build_shell_info(&datasets, &shell_max_epochs, &tracks);
+    let event_chunks = chunks;
+    let shell_info = build_shell_info(
+        &datasets,
+        &history_analysis.shell_max_epochs,
+        &initial_chunk.tracks,
+    );
 
     let summary_csv_path = config.output_dir.join("shell_summary.csv");
     let db_path = config.output_dir.join("starlink_shell_map.sqlite");
     let data_js_path = config.output_dir.join("data.js");
     let html_path = config.output_dir.join("index.html");
+    let chunk_dir = config.output_dir.join("chunks");
 
     write_summary_csv(&summary_csv_path, &shell_info)?;
     write_sqlite_database(
         &db_path,
         &shell_info,
         &datasets,
-        &tracks,
-        &frame_times,
-        &cells,
-        &visibility,
+        &initial_chunk.tracks,
+        &initial_chunk.frame_times,
+        &cell_grid.cells,
+        &initial_chunk.visibility,
+        &generated_events,
         center_utc,
         latest_common_utc,
     )?;
     write_data_js(
         &data_js_path,
         &shell_info,
-        &tracks,
-        &frame_times,
-        &cells,
-        &visibility,
+        &cell_grid.cells,
+        &generated_events,
         center_utc,
         latest_common_utc,
         config.step_minutes,
+        &initial_chunk.chunk_id,
     )?;
-    write_html(&html_path, &shell_info, center_utc, config.step_minutes, config.cell_degrees)?;
+    fs::create_dir_all(&chunk_dir)?;
+    write_chunk_js(
+        &chunk_dir.join(format!("{}.js", initial_chunk.chunk_id)),
+        &initial_chunk,
+    )?;
+    write_html(
+        &html_path,
+        &shell_info,
+        center_utc,
+        config.step_minutes,
+        config.cell_degrees,
+        &format!("chunks/{}.js", initial_chunk.chunk_id),
+    )?;
+    for chunk in &event_chunks {
+        write_chunk_js(&chunk_dir.join(format!("{}.js", chunk.chunk_id)), chunk)?;
+    }
 
     eprintln!("Wrote {}", summary_csv_path.display());
     eprintln!("Wrote {}", db_path.display());
@@ -258,9 +355,10 @@ fn parse_args() -> io::Result<Config> {
     let mut eop = root.join("eop/eopc04_20u24.1962-now.csv");
     let mut output_dir = root.join("data/starlink_shell_map");
     let mut center_utc = None;
-    let mut hours = 24i64;
     let mut step_minutes = 5i64;
     let mut cell_degrees = 5i32;
+    let mut max_launch_events = DEFAULT_MAX_GENERATED_LAUNCH_EVENTS;
+    let mut max_decay_events = DEFAULT_MAX_GENERATED_DECAY_EVENTS;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -276,14 +374,6 @@ fn parse_args() -> io::Result<Config> {
             "--center-utc" => {
                 center_utc = Some(parse_rfc3339_utc(&next_arg(&mut args, "--center-utc")?)?)
             }
-            "--hours" => {
-                hours = next_arg(&mut args, "--hours")?.parse::<i64>().map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid --hours: {}", error),
-                    )
-                })?;
-            }
             "--step-minutes" => {
                 step_minutes = next_arg(&mut args, "--step-minutes")?
                     .parse::<i64>()
@@ -291,6 +381,26 @@ fn parse_args() -> io::Result<Config> {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
                             format!("invalid --step-minutes: {}", error),
+                        )
+                    })?;
+            }
+            "--max-launch-events" => {
+                max_launch_events = next_arg(&mut args, "--max-launch-events")?
+                    .parse::<usize>()
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("invalid --max-launch-events: {}", error),
+                        )
+                    })?;
+            }
+            "--max-decay-events" => {
+                max_decay_events = next_arg(&mut args, "--max-decay-events")?
+                    .parse::<usize>()
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("invalid --max-decay-events: {}", error),
                         )
                     })?;
             }
@@ -324,9 +434,10 @@ fn parse_args() -> io::Result<Config> {
         eop,
         output_dir,
         center_utc,
-        hours,
         step_minutes,
         cell_degrees,
+        max_launch_events,
+        max_decay_events,
     })
 }
 
@@ -339,8 +450,9 @@ fn print_usage() {
     println!("  --eop PATH");
     println!("  --output-dir PATH");
     println!("  --center-utc RFC3339");
-    println!("  --hours N");
     println!("  --step-minutes N");
+    println!("  --max-launch-events N");
+    println!("  --max-decay-events N");
     println!("  --cell-degrees N");
     println!();
     println!("Defaults:");
@@ -350,8 +462,12 @@ fn print_usage() {
     println!("  eop: eop/eopc04_20u24.1962-now.csv");
     println!("  output-dir: data/starlink_shell_map");
     println!("  center-utc: latest common shell epoch rounded down to step");
-    println!("  hours: 24");
     println!("  step-minutes: 5");
+    println!(
+        "  max-launch-events: {}",
+        DEFAULT_MAX_GENERATED_LAUNCH_EVENTS
+    );
+    println!("  max-decay-events: {}", DEFAULT_MAX_GENERATED_DECAY_EVENTS);
     println!("  cell-degrees: 5");
 }
 
@@ -393,13 +509,15 @@ fn build_shell_datasets(
     let mut phase1_groups = BTreeMap::<String, GroupInfo>::new();
     for row in &phase1_rows {
         phase1_ids.insert(row.norad_cat_id.clone());
-        phase1_groups.entry(row.group_slug.clone()).or_insert(GroupInfo {
-            group_slug: row.group_slug.clone(),
-            group_name: row.group_name.clone(),
-            launch_date: row.launch_date.clone(),
-            satellite_count: 0,
-            history_path: Some(group1_history_file.clone()),
-        });
+        phase1_groups
+            .entry(row.group_slug.clone())
+            .or_insert(GroupInfo {
+                group_slug: row.group_slug.clone(),
+                group_name: row.group_name.clone(),
+                launch_date: row.launch_date.clone(),
+                satellite_count: 0,
+                history_path: Some(group1_history_file.clone()),
+            });
         if let Some(group) = phase1_groups.get_mut(&row.group_slug) {
             group.satellite_count += 1;
         }
@@ -527,27 +645,40 @@ fn discover_group4_history_files(root: &Path) -> io::Result<BTreeMap<String, Pat
     Ok(map)
 }
 
-fn scan_shell_max_epochs(datasets: &[ShellDataset]) -> io::Result<BTreeMap<String, String>> {
-    let mut result = BTreeMap::new();
+fn analyze_history_inputs(datasets: &[ShellDataset]) -> io::Result<HistoryAnalysis> {
+    let mut shell_max_epochs = BTreeMap::new();
+    let mut earliest_decay_by_norad = HashMap::new();
     for dataset in datasets {
         let mut shell_max = None::<String>;
         for input in &dataset.inputs {
-            eprintln!("Scanning latest epoch in {}", input.path.display());
-            let file_max = scan_history_max_epoch(&input.path, &input.norad_ids)?;
+            eprintln!("Analyzing history input {}", input.path.display());
+            let file_max =
+                analyze_history_input(&input.path, &input.norad_ids, &mut earliest_decay_by_norad)?;
             if let Some(epoch) = file_max {
-                if shell_max.as_ref().map(|current| &epoch > current).unwrap_or(true) {
+                if shell_max
+                    .as_ref()
+                    .map(|current| &epoch > current)
+                    .unwrap_or(true)
+                {
                     shell_max = Some(epoch);
                 }
             }
         }
         if let Some(max_epoch) = shell_max {
-            result.insert(dataset.shell_id.clone(), max_epoch);
+            shell_max_epochs.insert(dataset.shell_id.clone(), max_epoch);
         }
     }
-    Ok(result)
+    Ok(HistoryAnalysis {
+        shell_max_epochs,
+        earliest_decay_by_norad,
+    })
 }
 
-fn scan_history_max_epoch(path: &Path, norad_ids: &HashSet<String>) -> io::Result<Option<String>> {
+fn analyze_history_input(
+    path: &Path,
+    norad_ids: &HashSet<String>,
+    earliest_decay_by_norad: &mut HashMap<String, DateTime<Utc>>,
+) -> io::Result<Option<String>> {
     let reader = BufReader::new(File::open(path)?);
     let mut lines = reader.lines();
     let header = lines
@@ -557,6 +688,7 @@ fn scan_history_max_epoch(path: &Path, norad_ids: &HashSet<String>) -> io::Resul
     let header_map = build_header_map(&parse_csv_line(&header));
     let norad_index = require_column(&header_map, "NORAD_CAT_ID")?;
     let epoch_index = require_column(&header_map, "EPOCH")?;
+    let decay_index = require_column(&header_map, "DECAY_DATE")?;
 
     let mut latest = None::<String>;
     for line in lines {
@@ -571,16 +703,31 @@ fn scan_history_max_epoch(path: &Path, norad_ids: &HashSet<String>) -> io::Resul
         }
         let epoch = get_field(&fields, epoch_index, "EPOCH")?;
         if epoch.is_empty() {
-            continue;
-        }
-        if latest.as_ref().map(|current| &epoch > current).unwrap_or(true) {
+        } else if latest
+            .as_ref()
+            .map(|current| &epoch > current)
+            .unwrap_or(true)
+        {
             latest = Some(epoch);
+        }
+        if let Some(decay_utc) = parse_optional_utc(&get_field(&fields, decay_index, "DECAY_DATE")?)
+        {
+            earliest_decay_by_norad
+                .entry(norad)
+                .and_modify(|current| {
+                    if decay_utc < *current {
+                        *current = decay_utc;
+                    }
+                })
+                .or_insert(decay_utc);
         }
     }
     Ok(latest)
 }
 
-fn determine_latest_common_utc(shell_max_epochs: &BTreeMap<String, String>) -> io::Result<DateTime<Utc>> {
+fn determine_latest_common_utc(
+    shell_max_epochs: &BTreeMap<String, String>,
+) -> io::Result<DateTime<Utc>> {
     let group1 = shell_max_epochs.get(GROUP1_SHELL_ID).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -597,12 +744,14 @@ fn determine_latest_common_utc(shell_max_epochs: &BTreeMap<String, String>) -> i
     parse_iso_utc(anchor)
 }
 
-fn select_latest_tles(
+fn select_latest_tles_for_requests(
     datasets: &[ShellDataset],
     catalog_rows: &[CatalogRow],
-    center_utc: &DateTime<Utc>,
-) -> io::Result<Vec<LatestTleRecord>> {
-    let anchor_text = format_iso_utc(center_utc);
+    requests: &[ChunkRequest],
+) -> io::Result<Vec<Vec<LatestTleRecord>>> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut catalog_by_norad = HashMap::<String, CatalogRow>::new();
     let mut shell_by_norad = HashMap::<String, (String, String, String)>::new();
     for row in catalog_rows {
@@ -610,36 +759,70 @@ fn select_latest_tles(
             catalog_by_norad.insert(row.norad_cat_id.clone(), row.clone());
             shell_by_norad.insert(
                 row.norad_cat_id.clone(),
-                (shell_id.to_string(), display_name.to_string(), color.to_string()),
+                (
+                    shell_id.to_string(),
+                    display_name.to_string(),
+                    color.to_string(),
+                ),
             );
         }
     }
 
-    let mut found = BTreeMap::<String, LatestTleRecord>::new();
+    let mut indexed_anchors = requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| (index, format_iso_utc(&request.selection_utc)))
+        .collect::<Vec<_>>();
+    indexed_anchors.sort_by(|left, right| left.1.cmp(&right.1));
+    let anchor_texts = indexed_anchors
+        .iter()
+        .map(|(_, anchor_text)| anchor_text.clone())
+        .collect::<Vec<_>>();
+    let max_anchor_text = anchor_texts.last().cloned().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "missing chunk request anchor")
+    })?;
+    let mut found_by_request =
+        vec![BTreeMap::<String, LatestTleRecord>::new(); indexed_anchors.len()];
     for dataset in datasets {
         for input in &dataset.inputs {
-            eprintln!("Selecting TLEs from {}", input.path.display());
-            select_latest_tles_from_history(
+            eprintln!(
+                "Selecting TLEs for {} chunk requests from {}",
+                anchor_texts.len(),
+                input.path.display()
+            );
+            select_latest_tles_for_requests_from_history(
                 &input.path,
                 &input.norad_ids,
-                &anchor_text,
+                &anchor_texts,
+                &max_anchor_text,
                 &catalog_by_norad,
                 &shell_by_norad,
-                &mut found,
+                &mut found_by_request,
             )?;
         }
     }
 
-    Ok(found.into_values().collect())
+    let mut ordered_records = vec![None; requests.len()];
+    for ((request_index, _), found) in indexed_anchors
+        .into_iter()
+        .zip(found_by_request.into_iter())
+    {
+        ordered_records[request_index] = Some(found.into_values().collect());
+    }
+    Ok(ordered_records
+        .into_iter()
+        .map(|records| records.unwrap_or_default())
+        .collect())
 }
 
-fn select_latest_tles_from_history(
+fn select_latest_tles_for_requests_from_history(
     path: &Path,
     norad_ids: &HashSet<String>,
-    anchor_text: &str,
+    anchor_texts: &[String],
+    max_anchor_text: &str,
     catalog_by_norad: &HashMap<String, CatalogRow>,
     shell_by_norad: &HashMap<String, (String, String, String)>,
-    found: &mut BTreeMap<String, LatestTleRecord>,
+    found_by_request: &mut [BTreeMap<String, LatestTleRecord>],
 ) -> io::Result<()> {
     let reader = BufReader::new(File::open(path)?);
     let mut lines = reader.lines();
@@ -668,22 +851,14 @@ fn select_latest_tles_from_history(
             continue;
         }
         let epoch_text = get_field(&fields, epoch_index, "EPOCH")?;
-        if epoch_text.is_empty() || epoch_text.as_str() > anchor_text {
+        if epoch_text.is_empty() || epoch_text.as_str() > max_anchor_text {
             continue;
         }
-        let creation_date_text = get_field(&fields, creation_index, "CREATION_DATE")?;
-        let better = match found.get(&norad) {
-            Some(existing) => {
-                epoch_text > existing.epoch_text
-                    || (epoch_text == existing.epoch_text
-                        && creation_date_text > existing.creation_date_text)
-            }
-            None => true,
-        };
-        if !better {
+        let first_anchor_index =
+            anchor_texts.partition_point(|anchor_text| anchor_text < &epoch_text);
+        if first_anchor_index >= anchor_texts.len() {
             continue;
         }
-
         let catalog = catalog_by_norad.get(&norad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -698,31 +873,49 @@ fn select_latest_tles_from_history(
         })?;
         let object_name = get_field(&fields, object_name_index, "OBJECT_NAME")?;
         let object_id = get_field(&fields, object_id_index, "OBJECT_ID")?;
+        let creation_date_text = get_field(&fields, creation_index, "CREATION_DATE")?;
         let decay_date_text = get_field(&fields, decay_index, "DECAY_DATE")?;
         let line1 = get_field(&fields, line1_index, "TLE_LINE1")?;
         let line2 = get_field(&fields, line2_index, "TLE_LINE2")?;
-        found.insert(
-            norad.clone(),
-            LatestTleRecord {
-                shell_id: shell_id.clone(),
-                display_name: display_name.clone(),
-                color: color.clone(),
-                group_slug: catalog.group_slug.clone(),
-                group_name: catalog.group_name.clone(),
-                launch_date: catalog.launch_date.clone(),
-                norad_cat_id: norad,
-                satname: catalog.satname.clone(),
-                object_name,
-                object_id,
-                epoch_text,
-                creation_date_text,
-                decay_date_text,
-                tle_line1: line1,
-                tle_line2: line2,
-            },
-        );
+        let record = LatestTleRecord {
+            shell_id: shell_id.clone(),
+            display_name: display_name.clone(),
+            color: color.clone(),
+            group_slug: catalog.group_slug.clone(),
+            group_name: catalog.group_name.clone(),
+            launch_date: catalog.launch_date.clone(),
+            norad_cat_id: norad,
+            satname: catalog.satname.clone(),
+            object_name,
+            object_id,
+            epoch_text,
+            creation_date_text,
+            decay_date_text,
+            tle_line1: line1,
+            tle_line2: line2,
+        };
+        for found in &mut found_by_request[first_anchor_index..] {
+            upsert_latest_tle_record(found, record.clone());
+        }
     }
     Ok(())
+}
+
+fn upsert_latest_tle_record(
+    found: &mut BTreeMap<String, LatestTleRecord>,
+    record: LatestTleRecord,
+) {
+    let better = match found.get(&record.norad_cat_id) {
+        Some(existing) => {
+            record.epoch_text > existing.epoch_text
+                || (record.epoch_text == existing.epoch_text
+                    && record.creation_date_text > existing.creation_date_text)
+        }
+        None => true,
+    };
+    if better {
+        found.insert(record.norad_cat_id.clone(), record);
+    }
 }
 
 fn build_frame_times(
@@ -745,20 +938,208 @@ fn build_frame_times(
     Ok(frames)
 }
 
-fn build_cells(cell_degrees: i32) -> Vec<Cell> {
+fn build_initial_chunk_request(center_utc: DateTime<Utc>) -> ChunkRequest {
+    ChunkRequest {
+        chunk_id: "chunk_initial".to_string(),
+        label: format!("Initial window around {}", center_utc.to_rfc3339()),
+        event_type: None,
+        focus_utc: center_utc,
+        selection_utc: center_utc,
+        start_utc: center_utc - Duration::hours(INITIAL_WINDOW_PAST_HOURS),
+        end_utc: center_utc + Duration::hours(INITIAL_WINDOW_FUTURE_HOURS),
+        highlight_time_utc: None,
+        highlight_norads: Vec::new(),
+    }
+}
+
+fn build_event_chunk_request(event: &TimelineEvent) -> ChunkRequest {
+    ChunkRequest {
+        chunk_id: event.chunk_id.clone(),
+        label: event.label.clone(),
+        event_type: Some(event.event_type.clone()),
+        focus_utc: event.time_utc,
+        selection_utc: if event.event_type == "launch" {
+            event.time_utc + Duration::days(7)
+        } else {
+            event.time_utc - Duration::minutes(1)
+        },
+        start_utc: event.time_utc - Duration::minutes(EVENT_WINDOW_LEAD_MINUTES),
+        end_utc: event.time_utc + Duration::hours(EVENT_WINDOW_FOLLOW_HOURS),
+        highlight_time_utc: Some(event.time_utc),
+        highlight_norads: event.highlight_norads.clone(),
+    }
+}
+
+fn build_chunks_from_requests(
+    requests: &[ChunkRequest],
+    latest_records_by_request: Vec<Vec<LatestTleRecord>>,
+    cell_grid: &CellGrid,
+    eop_records: &[EopRecord],
+    step_minutes: i64,
+) -> io::Result<Vec<WindowChunk>> {
+    let mut chunks = Vec::with_capacity(requests.len());
+    for (index, (request, latest_records)) in
+        requests.iter().zip(latest_records_by_request).enumerate()
+    {
+        if index > 0 {
+            eprintln!(
+                "Building chunk {} / {}: {} at {}",
+                index,
+                requests.len() - 1,
+                request.event_type.as_deref().unwrap_or("window"),
+                request.focus_utc.to_rfc3339()
+            );
+        }
+        let frame_times = build_frame_times(request.start_utc, request.end_utc, step_minutes)?;
+        let latest_records = filter_active_records(latest_records, request.focus_utc);
+        let frame_contexts = build_frame_contexts(&frame_times, eop_records)?;
+        let (tracks, visibility) =
+            compute_tracks_and_visibility(&latest_records, &frame_contexts, cell_grid)?;
+        chunks.push(WindowChunk {
+            chunk_id: request.chunk_id.clone(),
+            label: request.label.clone(),
+            event_type: request.event_type.clone(),
+            focus_utc: request.focus_utc,
+            start_utc: request.start_utc,
+            end_utc: request.end_utc,
+            highlight_time_utc: request.highlight_time_utc,
+            highlight_norads: request.highlight_norads.clone(),
+            frame_times,
+            tracks,
+            visibility,
+        });
+    }
+    Ok(chunks)
+}
+
+fn build_timeline_events(
+    datasets: &[ShellDataset],
+    catalog_rows: &[CatalogRow],
+    earliest_decay_by_norad: &HashMap<String, DateTime<Utc>>,
+) -> io::Result<Vec<TimelineEvent>> {
+    let mut events = Vec::new();
+    for dataset in datasets {
+        for group in &dataset.groups {
+            if let Some(launch_utc) = parse_launch_date_utc(&group.launch_date) {
+                events.push(TimelineEvent {
+                    event_id: String::new(),
+                    event_type: "launch".to_string(),
+                    label: format!(
+                        "{} / {} / {} satellites",
+                        group.group_name, dataset.display_name, group.satellite_count
+                    ),
+                    shell_id: dataset.shell_id.clone(),
+                    group_slug: Some(group.group_slug.clone()),
+                    time_utc: launch_utc,
+                    satellite_count: group.satellite_count,
+                    highlight_norads: catalog_rows
+                        .iter()
+                        .filter(|row| row.group_slug == group.group_slug)
+                        .map(|row| row.norad_cat_id.clone())
+                        .collect(),
+                    chunk_id: String::new(),
+                    chunk_path: String::new(),
+                });
+            }
+        }
+    }
+
+    let mut catalog_by_norad = HashMap::<String, CatalogRow>::new();
+    for row in catalog_rows {
+        if shell_identity(&row.group_family).is_some() {
+            catalog_by_norad.insert(row.norad_cat_id.clone(), row.clone());
+        }
+    }
+    let mut grouped_decay_rows = BTreeMap::<DateTime<Utc>, Vec<&CatalogRow>>::new();
+    for (norad, decay_utc) in earliest_decay_by_norad {
+        if let Some(catalog) = catalog_by_norad.get(norad) {
+            grouped_decay_rows
+                .entry(*decay_utc)
+                .or_default()
+                .push(catalog);
+        }
+    }
+    for (decay_utc, rows) in grouped_decay_rows {
+        let shell_id = rows
+            .first()
+            .and_then(|row| shell_identity(&row.group_family))
+            .map(|(shell_id, _, _)| shell_id.to_string())
+            .unwrap_or_else(|| "mixed".to_string());
+        events.push(TimelineEvent {
+            event_id: String::new(),
+            event_type: "decay".to_string(),
+            label: format!("{} satellites decaying", rows.len()),
+            shell_id,
+            group_slug: None,
+            time_utc: decay_utc,
+            satellite_count: rows.len(),
+            highlight_norads: rows.iter().map(|row| row.norad_cat_id.clone()).collect(),
+            chunk_id: String::new(),
+            chunk_path: String::new(),
+        });
+    }
+    events.sort_by(|left, right| {
+        left.time_utc
+            .cmp(&right.time_utc)
+            .then_with(|| left.event_type.cmp(&right.event_type))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    for (index, event) in events.iter_mut().enumerate() {
+        event.event_id = format!("event_{index:04}");
+        event.chunk_id = format!("chunk_event_{index:04}");
+        event.chunk_path = format!("chunks/{}.js", event.chunk_id);
+    }
+    Ok(events)
+}
+
+fn select_generated_events(
+    events: &[TimelineEvent],
+    center_utc: DateTime<Utc>,
+    max_launch_events: usize,
+    max_decay_events: usize,
+) -> Vec<TimelineEvent> {
+    let mut launches = Vec::new();
+    let mut decays = Vec::new();
+    for event in events {
+        if event.time_utc <= center_utc {
+            continue;
+        }
+        if event.event_type == "launch" && launches.len() < max_launch_events {
+            launches.push(event.clone());
+        } else if event.event_type == "decay" && decays.len() < max_decay_events {
+            decays.push(event.clone());
+        }
+        if launches.len() >= max_launch_events && decays.len() >= max_decay_events {
+            break;
+        }
+    }
+    let mut selected = launches;
+    selected.extend(decays);
+    selected.sort_by(|left, right| {
+        left.time_utc
+            .cmp(&right.time_utc)
+            .then_with(|| left.event_type.cmp(&right.event_type))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    selected
+}
+
+fn build_cells(cell_degrees: i32) -> CellGrid {
     let mut cells = Vec::new();
-    let lat_steps = 180 / cell_degrees;
-    let lon_steps = 360 / cell_degrees;
+    let lat_steps = (180 / cell_degrees) as usize;
+    let lon_steps = (360 / cell_degrees) as usize;
+    let cell_degrees_f64 = cell_degrees as f64;
     for lat_index in 0..lat_steps {
-        let lat_min_deg = -90.0 + (lat_index * cell_degrees) as f64;
-        let lat_max_deg = lat_min_deg + cell_degrees as f64;
+        let lat_min_deg = -90.0 + lat_index as f64 * cell_degrees_f64;
+        let lat_max_deg = lat_min_deg + cell_degrees_f64;
         let lat_center_deg = (lat_min_deg + lat_max_deg) * 0.5;
         let lat_rad = lat_center_deg.to_radians();
         let cos_lat = lat_rad.cos();
         let sin_lat = lat_rad.sin();
         for lon_index in 0..lon_steps {
-            let lon_min_deg = -180.0 + (lon_index * cell_degrees) as f64;
-            let lon_max_deg = lon_min_deg + cell_degrees as f64;
+            let lon_min_deg = -180.0 + lon_index as f64 * cell_degrees_f64;
+            let lon_max_deg = lon_min_deg + cell_degrees_f64;
             let lon_center_deg = (lon_min_deg + lon_max_deg) * 0.5;
             let lon_rad = lon_center_deg.to_radians();
             cells.push(Cell {
@@ -773,21 +1154,153 @@ fn build_cells(cell_degrees: i32) -> Vec<Cell> {
             });
         }
     }
-    cells
+    CellGrid {
+        cells,
+        lat_steps,
+        lon_steps,
+        cell_degrees: cell_degrees_f64,
+    }
+}
+
+fn build_frame_contexts(
+    frame_times: &[DateTime<Utc>],
+    eop_records: &[EopRecord],
+) -> io::Result<Vec<FrameContext>> {
+    let mut contexts = Vec::with_capacity(frame_times.len());
+    for frame_utc in frame_times {
+        let mjd_utc = datetime_to_jd(frame_utc) - MJD_OFFSET;
+        let eop = interpolate_eop(eop_records, mjd_utc)?;
+        let jd_utc = datetime_to_jd(frame_utc);
+        contexts.push(FrameContext {
+            frame_utc: *frame_utc,
+            jdut1: jd_utc + eop.ut1_utc_seconds / 86400.0,
+            lod_seconds: eop.lod_seconds,
+            xp_rad: eop.xp_rad,
+            yp_rad: eop.yp_rad,
+        });
+    }
+    Ok(contexts)
+}
+
+fn candidate_cell_indices(
+    cell_grid: &CellGrid,
+    sat_lat_deg: f64,
+    sat_lon_deg: f64,
+    altitude_km: f64,
+) -> Vec<usize> {
+    let mut indices = Vec::new();
+    let sat_radius_km = EARTH_RADIUS_KM + altitude_km.max(0.0);
+    let horizon_angle_rad = (EARTH_RADIUS_KM / sat_radius_km).clamp(-1.0, 1.0).acos();
+    let horizon_angle_deg = horizon_angle_rad.to_degrees();
+    let lat_min_deg = (sat_lat_deg - horizon_angle_deg).max(-90.0);
+    let lat_max_deg = (sat_lat_deg + horizon_angle_deg).min(90.0);
+    let row_start = (((lat_min_deg + 90.0) / cell_grid.cell_degrees).floor() as isize)
+        .clamp(0, cell_grid.lat_steps as isize - 1) as usize;
+    let row_end = (((lat_max_deg + 90.0) / cell_grid.cell_degrees).floor() as isize)
+        .clamp(0, cell_grid.lat_steps as isize - 1) as usize;
+    let sat_lon_norm = wrap_lon_360(sat_lon_deg + 180.0);
+
+    for row in row_start..=row_end {
+        let row_center_deg = -90.0 + (row as f64 + 0.5) * cell_grid.cell_degrees;
+        let cos_lat = row_center_deg.to_radians().cos().abs();
+        let lon_span_deg = if cos_lat < 1e-6 {
+            180.0
+        } else {
+            (horizon_angle_deg / cos_lat).min(180.0)
+        };
+        if lon_span_deg >= 180.0 {
+            for col in 0..cell_grid.lon_steps {
+                indices.push(row * cell_grid.lon_steps + col);
+            }
+            continue;
+        }
+
+        let start_norm = sat_lon_norm - lon_span_deg;
+        let end_norm = sat_lon_norm + lon_span_deg;
+        push_wrapped_columns(
+            &mut indices,
+            row,
+            start_norm,
+            end_norm,
+            cell_grid.lon_steps,
+            cell_grid.cell_degrees,
+        );
+    }
+
+    indices
+}
+
+fn push_wrapped_columns(
+    indices: &mut Vec<usize>,
+    row: usize,
+    start_norm: f64,
+    end_norm: f64,
+    lon_steps: usize,
+    cell_degrees: f64,
+) {
+    if start_norm < 0.0 {
+        push_column_range(
+            indices,
+            row,
+            start_norm + 360.0,
+            360.0 - f64::EPSILON,
+            lon_steps,
+            cell_degrees,
+        );
+        push_column_range(indices, row, 0.0, end_norm, lon_steps, cell_degrees);
+    } else if end_norm >= 360.0 {
+        push_column_range(
+            indices,
+            row,
+            start_norm,
+            360.0 - f64::EPSILON,
+            lon_steps,
+            cell_degrees,
+        );
+        push_column_range(indices, row, 0.0, end_norm - 360.0, lon_steps, cell_degrees);
+    } else {
+        push_column_range(indices, row, start_norm, end_norm, lon_steps, cell_degrees);
+    }
+}
+
+fn push_column_range(
+    indices: &mut Vec<usize>,
+    row: usize,
+    start_norm: f64,
+    end_norm: f64,
+    lon_steps: usize,
+    cell_degrees: f64,
+) {
+    let col_start = (start_norm / cell_degrees)
+        .floor()
+        .clamp(0.0, lon_steps as f64 - 1.0) as usize;
+    let col_end = (end_norm / cell_degrees)
+        .floor()
+        .clamp(0.0, lon_steps as f64 - 1.0) as usize;
+    for col in col_start..=col_end {
+        indices.push(row * lon_steps + col);
+    }
+}
+
+fn wrap_lon_360(value: f64) -> f64 {
+    let mut wrapped = value % 360.0;
+    if wrapped < 0.0 {
+        wrapped += 360.0;
+    }
+    wrapped
 }
 
 fn compute_tracks_and_visibility(
     records: &[LatestTleRecord],
-    frame_times: &[DateTime<Utc>],
-    cells: &[Cell],
-    eop_records: &[EopRecord],
+    frame_contexts: &[FrameContext],
+    cell_grid: &CellGrid,
 ) -> io::Result<(Vec<SatelliteTrack>, Vec<FrameCellVisibility>)> {
     let mut tracks = Vec::new();
-    let mut visibility = frame_times
+    let mut visibility = frame_contexts
         .iter()
         .map(|_| FrameCellVisibility {
-            group1_counts: vec![0u16; cells.len()],
-            group4_counts: vec![0u16; cells.len()],
+            group1_counts: vec![0u16; cell_grid.cells.len()],
+            group4_counts: vec![0u16; cell_grid.cells.len()],
         })
         .collect::<Vec<_>>();
 
@@ -798,32 +1311,28 @@ fn compute_tracks_and_visibility(
         let mut tle = TLE::new();
         tle.name = record.satname.clone();
         tle.parse_lines(&record.tle_line1, &record.tle_line2);
-        let mut samples = Vec::with_capacity(frame_times.len());
+        let mut samples = Vec::with_capacity(frame_contexts.len());
         let mut failed = false;
-        for (frame_index, frame_utc) in frame_times.iter().enumerate() {
-            let mins_after_epoch = duration_to_minutes(*frame_utc - tle.epoch)?;
+        for (frame_index, frame_context) in frame_contexts.iter().enumerate() {
+            let mins_after_epoch = duration_to_minutes(frame_context.frame_utc - tle.epoch)?;
             let (r_teme, v_teme) = tle.get_rv(mins_after_epoch);
             if tle.sgp4_error != 0 {
                 eprintln!(
                     "Skipping NORAD {} due to SGP4 error {} at {}",
                     record.norad_cat_id,
                     tle.sgp4_error,
-                    frame_utc.to_rfc3339()
+                    frame_context.frame_utc.to_rfc3339()
                 );
                 failed = true;
                 break;
             }
-            let mjd_utc = datetime_to_jd(frame_utc) - MJD_OFFSET;
-            let eop = interpolate_eop(eop_records, mjd_utc)?;
-            let jd_utc = datetime_to_jd(frame_utc);
-            let jdut1 = jd_utc + eop.ut1_utc_seconds / 86400.0;
             let (r_ecef, _) = teme_to_ecef(
                 r_teme,
                 v_teme,
-                jdut1,
-                eop.lod_seconds,
-                eop.xp_rad,
-                eop.yp_rad,
+                frame_context.jdut1,
+                frame_context.lod_seconds,
+                frame_context.xp_rad,
+                frame_context.yp_rad,
             );
             let (lat_deg, lon_deg, altitude_km) = ecef_to_geodetic(r_ecef);
             samples.push(PositionSample {
@@ -834,9 +1343,14 @@ fn compute_tracks_and_visibility(
                 y_km: r_ecef[1],
                 z_km: r_ecef[2],
             });
-            for cell in cells {
-                let visible = r_ecef[0] * cell.unit_x + r_ecef[1] * cell.unit_y + r_ecef[2] * cell.unit_z
-                    > EARTH_RADIUS_KM;
+            if !record_is_active_at(record, frame_context.frame_utc) {
+                continue;
+            }
+            for cell_index in candidate_cell_indices(cell_grid, lat_deg, lon_deg, altitude_km) {
+                let cell = &cell_grid.cells[cell_index];
+                let visible =
+                    r_ecef[0] * cell.unit_x + r_ecef[1] * cell.unit_y + r_ecef[2] * cell.unit_z
+                        > EARTH_RADIUS_KM;
                 if visible {
                     if record.shell_id == GROUP1_SHELL_ID {
                         visibility[frame_index].group1_counts[cell.index] += 1;
@@ -885,7 +1399,11 @@ fn build_shell_info(
                 .iter()
                 .filter(|group| group.history_path.is_some())
                 .count(),
-            expected_satellite_count: dataset.groups.iter().map(|group| group.satellite_count).sum(),
+            expected_satellite_count: dataset
+                .groups
+                .iter()
+                .map(|group| group.satellite_count)
+                .sum(),
             available_satellite_count: counts.get(&dataset.shell_id).copied().unwrap_or(0),
             latest_epoch_text: shell_max_epochs.get(&dataset.shell_id).cloned(),
             missing_groups: dataset.missing_groups.clone(),
@@ -925,6 +1443,7 @@ fn write_sqlite_database(
     frame_times: &[DateTime<Utc>],
     cells: &[Cell],
     visibility: &[FrameCellVisibility],
+    events: &[TimelineEvent],
     center_utc: DateTime<Utc>,
     latest_common_utc: DateTime<Utc>,
 ) -> io::Result<()> {
@@ -941,12 +1460,10 @@ fn write_sqlite_database(
                 format!("failed to start sqlite3: {}", error),
             )
         })?;
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            "failed to open sqlite3 stdin",
-        )
-    })?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to open sqlite3 stdin"))?;
 
     writeln!(stdin, "PRAGMA synchronous = OFF;")?;
     writeln!(stdin, "BEGIN;")?;
@@ -977,6 +1494,14 @@ fn write_sqlite_database(
     writeln!(
         stdin,
         "CREATE TABLE cell_visibility (frame_index INTEGER NOT NULL, cell_index INTEGER NOT NULL, lat_min_deg REAL NOT NULL, lat_max_deg REAL NOT NULL, lon_min_deg REAL NOT NULL, lon_max_deg REAL NOT NULL, group1_visible INTEGER NOT NULL, group4_visible INTEGER NOT NULL, diff_visible INTEGER NOT NULL, PRIMARY KEY (frame_index, cell_index));"
+    )?;
+    writeln!(
+        stdin,
+        "CREATE TABLE launch_events (event_id TEXT PRIMARY KEY, shell_id TEXT NOT NULL, group_slug TEXT, event_utc TEXT NOT NULL, label TEXT NOT NULL, satellite_count INTEGER NOT NULL, chunk_id TEXT NOT NULL, chunk_path TEXT NOT NULL);"
+    )?;
+    writeln!(
+        stdin,
+        "CREATE TABLE decay_events (event_id TEXT PRIMARY KEY, shell_id TEXT NOT NULL, event_utc TEXT NOT NULL, label TEXT NOT NULL, satellite_count INTEGER NOT NULL, chunk_id TEXT NOT NULL, chunk_path TEXT NOT NULL);"
     )?;
 
     insert_metadata(&mut stdin, "generated_utc", &Utc::now().to_rfc3339())?;
@@ -1042,6 +1567,34 @@ fn write_sqlite_database(
             sql_string(&frame_utc.to_rfc3339()),
         )?;
     }
+    for event in events {
+        if event.event_type == "launch" {
+            writeln!(
+                stdin,
+                "INSERT INTO launch_events VALUES ({}, {}, {}, {}, {}, {}, {}, {});",
+                sql_string(&event.event_id),
+                sql_string(&event.shell_id),
+                sql_nullable(event.group_slug.as_deref()),
+                sql_string(&event.time_utc.to_rfc3339()),
+                sql_string(&event.label),
+                event.satellite_count,
+                sql_string(&event.chunk_id),
+                sql_string(&event.chunk_path),
+            )?;
+        } else if event.event_type == "decay" {
+            writeln!(
+                stdin,
+                "INSERT INTO decay_events VALUES ({}, {}, {}, {}, {}, {}, {});",
+                sql_string(&event.event_id),
+                sql_string(&event.shell_id),
+                sql_string(&event.time_utc.to_rfc3339()),
+                sql_string(&event.label),
+                event.satellite_count,
+                sql_string(&event.chunk_id),
+                sql_string(&event.chunk_path),
+            )?;
+        }
+    }
     for track in tracks {
         for (frame_index, sample) in track.samples.iter().enumerate() {
             writeln!(
@@ -1079,8 +1632,22 @@ fn write_sqlite_database(
             )?;
         }
     }
-    writeln!(stdin, "CREATE INDEX idx_frame_samples_shell ON frame_samples (shell_id, frame_index);")?;
-    writeln!(stdin, "CREATE INDEX idx_cell_visibility_frame ON cell_visibility (frame_index);")?;
+    writeln!(
+        stdin,
+        "CREATE INDEX idx_frame_samples_shell ON frame_samples (shell_id, frame_index);"
+    )?;
+    writeln!(
+        stdin,
+        "CREATE INDEX idx_cell_visibility_frame ON cell_visibility (frame_index);"
+    )?;
+    writeln!(
+        stdin,
+        "CREATE INDEX idx_launch_events_utc ON launch_events (event_utc);"
+    )?;
+    writeln!(
+        stdin,
+        "CREATE INDEX idx_decay_events_utc ON decay_events (event_utc);"
+    )?;
     writeln!(stdin, "COMMIT;")?;
     drop(stdin);
 
@@ -1106,15 +1673,18 @@ fn insert_metadata(writer: &mut dyn Write, key: &str, value: &str) -> io::Result
 fn write_data_js(
     path: &Path,
     shell_info: &[ShellInfo],
-    tracks: &[SatelliteTrack],
-    frame_times: &[DateTime<Utc>],
     cells: &[Cell],
-    visibility: &[FrameCellVisibility],
+    events: &[TimelineEvent],
     center_utc: DateTime<Utc>,
     latest_common_utc: DateTime<Utc>,
     step_minutes: i64,
+    initial_chunk_id: &str,
 ) -> io::Result<()> {
     let mut writer = BufWriter::new(File::create(path)?);
+    writeln!(
+        writer,
+        "window.STARLINK_SHELL_CHUNKS = window.STARLINK_SHELL_CHUNKS || {{}};"
+    )?;
     writeln!(writer, "window.STARLINK_SHELL_DATA = {{")?;
     writeln!(writer, "  meta: {{")?;
     writeln!(
@@ -1133,11 +1703,18 @@ fn write_data_js(
         js_escape(&latest_common_utc.to_rfc3339())
     )?;
     writeln!(writer, "    stepMinutes: {},", step_minutes)?;
-    writeln!(writer, "    shells: [")?;
+    writeln!(
+        writer,
+        "    initialChunkId: \"{}\"",
+        js_escape(initial_chunk_id)
+    )?;
+    writeln!(writer, "  }},")?;
+
+    writeln!(writer, "  shells: [")?;
     for item in shell_info {
         writeln!(
             writer,
-            "      {{shellId:\"{}\",displayName:\"{}\",color:\"{}\",expectedGroups:{},availableGroups:{},expectedSatellites:{},availableSatellites:{},latestEpochUtc:{},missingGroups:[{}]}},",
+            "    {{shellId:\"{}\",displayName:\"{}\",color:\"{}\",expectedGroups:{},availableGroups:{},expectedSatellites:{},availableSatellites:{},latestEpochUtc:{},missingGroups:[{}]}},",
             js_escape(&item.shell_id),
             js_escape(&item.display_name),
             js_escape(&item.color),
@@ -1154,13 +1731,6 @@ fn write_data_js(
                 .join(","),
         )?;
     }
-    writeln!(writer, "    ]")?;
-    writeln!(writer, "  }},")?;
-
-    writeln!(writer, "  frames: [")?;
-    for frame in frame_times {
-        writeln!(writer, "    \"{}\",", js_escape(&frame.to_rfc3339()))?;
-    }
     writeln!(writer, "  ],")?;
 
     writeln!(writer, "  cells: [")?;
@@ -1173,8 +1743,88 @@ fn write_data_js(
     }
     writeln!(writer, "  ],")?;
 
+    writeln!(writer, "  events: [")?;
+    for event in events {
+        writeln!(
+            writer,
+            "    {{eventId:\"{}\",type:\"{}\",label:\"{}\",shellId:\"{}\",groupSlug:{},timeUtc:\"{}\",satelliteCount:{},chunkId:\"{}\",chunkPath:\"{}\"}},",
+            js_escape(&event.event_id),
+            js_escape(&event.event_type),
+            js_escape(&event.label),
+            js_escape(&event.shell_id),
+            js_nullable(event.group_slug.as_deref()),
+            js_escape(&event.time_utc.to_rfc3339()),
+            event.satellite_count,
+            js_escape(&event.chunk_id),
+            js_escape(&event.chunk_path),
+        )?;
+    }
+    writeln!(writer, "  ]")?;
+    writeln!(writer, "}};")?;
+    writer.flush()
+}
+
+fn write_chunk_js(path: &Path, chunk: &WindowChunk) -> io::Result<()> {
+    let mut writer = BufWriter::new(File::create(path)?);
+    writeln!(
+        writer,
+        "window.STARLINK_SHELL_CHUNKS = window.STARLINK_SHELL_CHUNKS || {{}};"
+    )?;
+    writeln!(
+        writer,
+        "window.STARLINK_SHELL_CHUNKS[\"{}\"] = {{",
+        js_escape(&chunk.chunk_id)
+    )?;
+    writeln!(writer, "  chunkId: \"{}\",", js_escape(&chunk.chunk_id))?;
+    writeln!(writer, "  label: \"{}\",", js_escape(&chunk.label))?;
+    writeln!(
+        writer,
+        "  eventType: {},",
+        js_nullable(chunk.event_type.as_deref())
+    )?;
+    writeln!(
+        writer,
+        "  focusUtc: \"{}\",",
+        js_escape(&chunk.focus_utc.to_rfc3339())
+    )?;
+    writeln!(
+        writer,
+        "  startUtc: \"{}\",",
+        js_escape(&chunk.start_utc.to_rfc3339())
+    )?;
+    writeln!(
+        writer,
+        "  endUtc: \"{}\",",
+        js_escape(&chunk.end_utc.to_rfc3339())
+    )?;
+    writeln!(
+        writer,
+        "  highlightTimeUtc: {},",
+        js_nullable(
+            chunk
+                .highlight_time_utc
+                .map(|value| value.to_rfc3339())
+                .as_deref()
+        )
+    )?;
+    writeln!(
+        writer,
+        "  highlightNorads: [{}],",
+        chunk
+            .highlight_norads
+            .iter()
+            .map(|value| format!("\"{}\"", js_escape(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    )?;
+    writeln!(writer, "  frames: [")?;
+    for frame in &chunk.frame_times {
+        writeln!(writer, "    \"{}\",", js_escape(&frame.to_rfc3339()))?;
+    }
+    writeln!(writer, "  ],")?;
+
     writeln!(writer, "  heatmap: [")?;
-    for frame_counts in visibility {
+    for frame_counts in &chunk.visibility {
         let group1 = frame_counts
             .group1_counts
             .iter()
@@ -1187,23 +1837,12 @@ fn write_data_js(
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let diff = frame_counts
-            .group1_counts
-            .iter()
-            .zip(&frame_counts.group4_counts)
-            .map(|(left, right)| (*left as i32 - *right as i32).to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        writeln!(
-            writer,
-            "    {{group1:[{}],group4:[{}],diff:[{}]}},",
-            group1, group4, diff
-        )?;
+        writeln!(writer, "    {{group1:[{}],group4:[{}]}},", group1, group4)?;
     }
     writeln!(writer, "  ],")?;
 
     writeln!(writer, "  satellites: [")?;
-    for track in tracks {
+    for track in &chunk.tracks {
         let positions = track
             .samples
             .iter()
@@ -1217,7 +1856,7 @@ fn write_data_js(
             .join(",");
         writeln!(
             writer,
-            "    {{norad:\"{}\",satname:\"{}\",objectName:\"{}\",shellId:\"{}\",displayName:\"{}\",color:\"{}\",groupSlug:\"{}\",groupName:\"{}\",launchDate:\"{}\",epochUtc:\"{}\",positions:[{}]}},",
+            "    {{norad:\"{}\",satname:\"{}\",objectName:\"{}\",shellId:\"{}\",displayName:\"{}\",color:\"{}\",groupSlug:\"{}\",groupName:\"{}\",launchDate:\"{}\",epochUtc:\"{}\",decayUtc:{},positions:[{}]}},",
             js_escape(&track.record.norad_cat_id),
             js_escape(&track.record.satname),
             js_escape(&track.record.object_name),
@@ -1228,6 +1867,7 @@ fn write_data_js(
             js_escape(&track.record.group_name),
             js_escape(&track.record.launch_date),
             js_escape(&track.record.epoch_text),
+            js_nullable(parse_optional_utc(&track.record.decay_date_text).map(|value| value.to_rfc3339()).as_deref()),
             positions,
         )?;
     }
@@ -1242,13 +1882,17 @@ fn write_html(
     center_utc: DateTime<Utc>,
     step_minutes: i64,
     cell_degrees: i32,
+    initial_chunk_script: &str,
 ) -> io::Result<()> {
     let mut writer = BufWriter::new(File::create(path)?);
     writeln!(writer, "<!DOCTYPE html>")?;
     writeln!(writer, "<html lang=\"en\">")?;
     writeln!(writer, "<head>")?;
     writeln!(writer, "<meta charset=\"utf-8\">")?;
-    writeln!(writer, "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")?;
+    writeln!(
+        writer,
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    )?;
     writeln!(writer, "<title>Starlink Shell Map</title>")?;
     writer.write_all(
         br#"<style>
@@ -1289,6 +1933,7 @@ h1{margin:4px 0 0;font-size:34px;line-height:1.05}
 .card h2{margin:0 0 10px;font-size:15px}
 .control-row{display:grid;gap:10px}
 .inline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.inline > *{flex:1 1 0}
 label,.muted{font:600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;color:var(--muted)}
 button,select,input[type=range]{width:100%}
 button,select{
@@ -1356,12 +2001,15 @@ code{font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#bfeeff}
     writeln!(writer, "<div class=\"map-wrap\"><canvas id=\"mapCanvas\"></canvas><div class=\"overlay\"><div class=\"pill\" id=\"timePill\">Loading...</div><div class=\"pill\" id=\"modePill\">Heatmap: diff (Group1 - Group4)</div></div></div>")?;
     writeln!(writer, "</section>")?;
     writeln!(writer, "<aside class=\"side\"><div class=\"grid\">")?;
-    writeln!(writer, "<div class=\"card\"><h2>Playback</h2><div class=\"control-row\"><div class=\"inline\"><button id=\"playPause\">Pause</button><select id=\"speedSelect\"><option value=\"0.25\">0.25x</option><option value=\"0.5\">0.5x</option><option value=\"1\" selected>1x</option><option value=\"2\">2x</option><option value=\"4\">4x</option></select></div><label for=\"frameSlider\">Frame</label><input id=\"frameSlider\" type=\"range\" min=\"0\" max=\"0\" value=\"0\"></div></div>")?;
+    writeln!(writer, "<div class=\"card\"><h2>Playback</h2><div class=\"control-row\"><div class=\"inline\"><button id=\"playPause\">Pause</button><button id=\"projectionToggle\">Switch To Globe</button><select id=\"speedSelect\"><option value=\"0.03125\">0.03125x</option><option value=\"0.0625\">0.0625x</option><option value=\"0.125\">0.125x</option><option value=\"0.25\" selected>0.25x</option><option value=\"0.5\">0.5x</option><option value=\"1\">1x</option><option value=\"2\">2x</option><option value=\"4\">4x</option></select></div><div class=\"inline\"><button id=\"nextLaunch\">Next Launch</button><button id=\"nextDecay\">Next Decay</button></div><div class=\"muted\" id=\"eventSummary\">Loading next launch/decay dates...</div><label for=\"frameSlider\">Frame</label><input id=\"frameSlider\" type=\"range\" min=\"0\" max=\"0\" value=\"0\"></div></div>")?;
     writeln!(writer, "<div class=\"card\"><h2>Layers</h2><div class=\"control-row\"><label for=\"heatmapMode\">Heatmap</label><select id=\"heatmapMode\"><option value=\"diff\" selected>Group1 - Group4</option><option value=\"group1\">Group 1 visible count</option><option value=\"group4\">Group 4 visible count</option><option value=\"off\">Off</option></select><div class=\"checks\" id=\"shellChecks\"></div></div></div>")?;
     writeln!(writer, "<div class=\"card\"><h2 id=\"legendTitle\">Heatmap Legend</h2><div class=\"legend-scale\"><div class=\"legend-bar\" id=\"legendBar\"></div><div class=\"legend-labels\"><span id=\"legendMin\">Group 4 higher</span><span class=\"legend-mid\" id=\"legendMid\">equal</span><span id=\"legendMax\">Group 1 higher</span></div><div class=\"legend-note\" id=\"legendNote\">Colors are normalized to the current frame's peak absolute difference.</div></div></div>")?;
     writeln!(writer, "<div class=\"card\"><h2>Snapshot</h2><div class=\"stats\"><div class=\"stat\"><strong id=\"satelliteCount\">0</strong><span>Displayed Satellites</span></div><div class=\"stat\"><strong id=\"cellPeak\">0</strong><span>Peak Cell Count</span></div></div></div>")?;
     writeln!(writer, "<div class=\"card\"><h2>Hover</h2><div id=\"hover\">Move the pointer near a satellite.</div></div>")?;
-    writeln!(writer, "<div class=\"card\"><h2>Coverage</h2><div class=\"shell-list\">")?;
+    writeln!(
+        writer,
+        "<div class=\"card\"><h2>Coverage</h2><div class=\"shell-list\">"
+    )?;
     for item in shell_info {
         writeln!(
             writer,
@@ -1383,13 +2031,25 @@ code{font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#bfeeff}
     writeln!(writer, "</div></div>")?;
     writeln!(writer, "</div></aside></div>")?;
     writeln!(writer, "<script src=\"data.js\"></script>")?;
+    writeln!(
+        writer,
+        "<script src=\"{}\"></script>",
+        js_escape(initial_chunk_script)
+    )?;
     writer.write_all(
         br#"<script>
 const DATA = window.STARLINK_SHELL_DATA;
+const CHUNKS = window.STARLINK_SHELL_CHUNKS || (window.STARLINK_SHELL_CHUNKS = {});
+const WINDOW_STATE = { data: CHUNKS[DATA.meta.initialChunkId] };
+DATA.meta.shells = DATA.shells;
+Object.defineProperty(DATA, 'frames', { get() { return WINDOW_STATE.data.frames; } });
+Object.defineProperty(DATA, 'heatmap', { get() { return WINDOW_STATE.data.heatmap; } });
+Object.defineProperty(DATA, 'satellites', { get() { return WINDOW_STATE.data.satellites; } });
 const canvas = document.getElementById('mapCanvas');
 const ctx = canvas.getContext('2d');
 const frameSlider = document.getElementById('frameSlider');
 const playPause = document.getElementById('playPause');
+const projectionToggle = document.getElementById('projectionToggle');
 const speedSelect = document.getElementById('speedSelect');
 const heatmapMode = document.getElementById('heatmapMode');
 const shellChecks = document.getElementById('shellChecks');
@@ -1404,6 +2064,9 @@ const legendMinEl = document.getElementById('legendMin');
 const legendMidEl = document.getElementById('legendMid');
 const legendMaxEl = document.getElementById('legendMax');
 const legendNoteEl = document.getElementById('legendNote');
+const nextLaunchBtn = document.getElementById('nextLaunch');
+const nextDecayBtn = document.getElementById('nextDecay');
+const eventSummaryEl = document.getElementById('eventSummary');
 
 let dpr = Math.max(1, window.devicePixelRatio || 1);
 let width = 0;
@@ -1413,10 +2076,48 @@ let playing = true;
 let lastTick = performance.now();
 let pointerX = -1e9;
 let pointerY = -1e9;
-
 const state = {
   visibleShells: new Set(DATA.meta.shells.map(item => item.shellId)),
+  projectionMode: 'map',
+  globeYaw: -0.9,
+  globePitch: 0.35,
+  dragging: false,
+  dragLastX: 0,
+  dragLastY: 0,
+  visibleSatelliteCache: null,
+  segmentCache: new WeakMap(),
+  events: { launches: [], decays: [] },
+  frameTimesMs: [],
+  frameStartMs: 0,
+  frameEndMs: 0,
+  frameStepMs: Math.max(60000, DATA.meta.stepMinutes * 60 * 1000),
+  highlightTimeMs: WINDOW_STATE.data.highlightTimeUtc ? Date.parse(WINDOW_STATE.data.highlightTimeUtc) : null,
+  highlightNorads: new Set(WINDOW_STATE.data.highlightNorads || []),
 };
+
+function normalizeSatellites(satellites) {
+  for (const satellite of satellites) {
+    satellite.launchMs = Date.parse(`${satellite.launchDate}T00:00:00Z`);
+    satellite.decayMs = satellite.decayUtc ? Date.parse(satellite.decayUtc) : null;
+  }
+}
+
+function refreshFrameCache() {
+  state.frameTimesMs = DATA.frames.map(value => Date.parse(value));
+  state.frameStartMs = state.frameTimesMs[0] || 0;
+  state.frameEndMs = state.frameTimesMs[state.frameTimesMs.length - 1] || state.frameStartMs;
+  state.frameStepMs = state.frameTimesMs.length > 1
+    ? state.frameTimesMs[1] - state.frameTimesMs[0]
+    : Math.max(60000, DATA.meta.stepMinutes * 60 * 1000);
+}
+normalizeSatellites(DATA.satellites);
+refreshFrameCache();
+
+function updateProjectionToggle() {
+  projectionToggle.textContent = state.projectionMode === 'map'
+    ? 'Switch To Globe'
+    : 'Switch To Map';
+}
 
 function buildShellChecks() {
   for (const shell of DATA.meta.shells) {
@@ -1427,10 +2128,113 @@ function buildShellChecks() {
     input.addEventListener('change', () => {
       if (input.checked) state.visibleShells.add(shell.shellId);
       else state.visibleShells.delete(shell.shellId);
+      state.visibleSatelliteCache = null;
       draw();
     });
     shellChecks.appendChild(row);
   }
+}
+
+function frameTimeMs(frame) {
+  const maxIndex = state.frameTimesMs.length - 1;
+  const leftIndex = Math.max(0, Math.min(maxIndex, Math.floor(frame)));
+  const rightIndex = Math.max(0, Math.min(maxIndex, Math.ceil(frame)));
+  const fraction = Math.max(0, Math.min(1, frame - leftIndex));
+  const leftMs = state.frameTimesMs[leftIndex];
+  const rightMs = state.frameTimesMs[rightIndex];
+  return leftMs + (rightMs - leftMs) * fraction;
+}
+
+function frameForTimeMs(targetMs) {
+  if (targetMs <= state.frameStartMs) return 0;
+  if (targetMs >= state.frameEndMs) return Math.max(0, state.frameTimesMs.length - 1);
+  return (targetMs - state.frameStartMs) / state.frameStepMs;
+}
+
+function skipLeadMs() {
+  return Math.max(60000, state.frameStepMs * 0.2);
+}
+
+function launchHighlightMs() {
+  return 45 * 60 * 1000;
+}
+
+function decayHighlightMs() {
+  return 45 * 60 * 1000;
+}
+
+function loadChunk(chunkId) {
+  if (CHUNKS[chunkId]) return Promise.resolve(CHUNKS[chunkId]);
+  const event = DATA.events.find(item => item.chunkId === chunkId);
+  if (!event) return Promise.reject(new Error(`Unknown chunk ${chunkId}`));
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = event.chunkPath;
+    script.onload = () => {
+      if (CHUNKS[chunkId]) resolve(CHUNKS[chunkId]);
+      else reject(new Error(`Chunk ${chunkId} did not register itself`));
+    };
+    script.onerror = () => reject(new Error(`Failed to load ${event.chunkPath}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function activateChunk(chunkId, targetMs = null) {
+  const chunk = await loadChunk(chunkId);
+  WINDOW_STATE.data = chunk;
+  normalizeSatellites(DATA.satellites);
+  refreshFrameCache();
+  state.visibleSatelliteCache = null;
+  state.segmentCache = new WeakMap();
+  state.highlightTimeMs = chunk.highlightTimeUtc ? Date.parse(chunk.highlightTimeUtc) : null;
+  state.highlightNorads = new Set(chunk.highlightNorads || []);
+  frameSlider.max = String(Math.max(0, DATA.frames.length - 1));
+  currentFrame = targetMs == null ? frameForTimeMs(Date.parse(chunk.focusUtc)) : frameForTimeMs(targetMs);
+  frameSlider.value = Math.round(currentFrame).toString();
+  draw();
+}
+
+function preloadChunk(chunkId) {
+  if (!chunkId || CHUNKS[chunkId]) return;
+  loadChunk(chunkId).catch(() => {});
+}
+
+function findNextEvent(events, currentMs) {
+  return events.find(event => event.timeMs > currentMs + 1) || null;
+}
+
+function eventLabel(event) {
+  return `${new Date(event.timeMs).toISOString()} / ${event.label}`;
+}
+
+function updateEventControls(currentMs) {
+  const nextLaunch = findNextEvent(state.events.launches, currentMs);
+  const nextDecay = findNextEvent(state.events.decays, currentMs);
+  nextLaunchBtn.disabled = !nextLaunch;
+  nextDecayBtn.disabled = !nextDecay;
+  if (!nextLaunch && !nextDecay) {
+    eventSummaryEl.textContent = 'No future launch or decay event remains in the local manifest.';
+    return;
+  }
+  const parts = [];
+  if (nextLaunch) parts.push(`Launch: ${eventLabel(nextLaunch)}`);
+  if (nextDecay) parts.push(`Decay: ${eventLabel(nextDecay)}`);
+  eventSummaryEl.textContent = parts.join(' | ');
+  preloadChunk(nextLaunch && nextLaunch.chunkId);
+  preloadChunk(nextDecay && nextDecay.chunkId);
+}
+
+async function jumpToNextEvent(type) {
+  const currentMs = frameTimeMs(currentFrame);
+  const events = type === 'launch' ? state.events.launches : state.events.decays;
+  const event = findNextEvent(events, currentMs);
+  if (!event) return;
+  const leadMs = type === 'launch'
+    ? skipLeadMs()
+    : Math.min(skipLeadMs(), decayHighlightMs() * 0.8);
+  await activateChunk(event.chunkId, event.timeMs - leadMs);
+  playing = true;
+  playPause.textContent = 'Pause';
 }
 
 function resize() {
@@ -1536,6 +2340,8 @@ function interpolatePosition(positions, frame) {
     lat: point.lat,
     lon: point.lon,
     alt: point.alt,
+    leftIndex,
+    rightIndex,
     left,
     right,
   };
@@ -1546,6 +2352,127 @@ function project(lat, lon) {
     x: (wrapLon(lon) + 180) / 360 * width,
     y: (90 - lat) / 180 * height,
   };
+}
+
+function globeLayout() {
+  return {
+    cx: width * 0.5,
+    cy: height * 0.5,
+    radius: Math.min(width, height) * 0.34,
+  };
+}
+
+function globeVector(lat, lon, alt) {
+  const latRad = lat * Math.PI / 180;
+  const lonRad = lon * Math.PI / 180;
+  const radius = 1 + alt / 6378.137;
+  const cosLat = Math.cos(latRad);
+  return {
+    x: radius * cosLat * Math.cos(lonRad),
+    y: radius * Math.sin(latRad),
+    z: radius * cosLat * Math.sin(lonRad),
+  };
+}
+
+function rotateGlobe(vec) {
+  const cy = Math.cos(state.globeYaw);
+  const sy = Math.sin(state.globeYaw);
+  const cp = Math.cos(state.globePitch);
+  const sp = Math.sin(state.globePitch);
+  const x1 = cy * vec.x + sy * vec.z;
+  const z1 = -sy * vec.x + cy * vec.z;
+  const y2 = cp * vec.y - sp * z1;
+  const z2 = sp * vec.y + cp * z1;
+  return { x: x1, y: y2, z: z2 };
+}
+
+function projectGlobe(lat, lon, alt = 0) {
+  const layout = globeLayout();
+  const rotated = rotateGlobe(globeVector(lat, lon, alt));
+  return {
+    x: layout.cx + rotated.x * layout.radius,
+    y: layout.cy - rotated.y * layout.radius,
+    z: rotated.z,
+    layout,
+  };
+}
+
+function drawGlobeBackdrop() {
+  const layout = globeLayout();
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, '#14283c');
+  gradient.addColorStop(0.6, '#09131d');
+  gradient.addColorStop(1, '#050a12');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  const globeGradient = ctx.createRadialGradient(
+    layout.cx - layout.radius * 0.22,
+    layout.cy - layout.radius * 0.34,
+    layout.radius * 0.10,
+    layout.cx,
+    layout.cy,
+    layout.radius
+  );
+  globeGradient.addColorStop(0, 'rgba(74,138,195,0.95)');
+  globeGradient.addColorStop(0.58, 'rgba(18,62,98,0.98)');
+  globeGradient.addColorStop(1, 'rgba(5,16,30,1)');
+  ctx.fillStyle = globeGradient;
+  ctx.beginPath();
+  ctx.arc(layout.cx, layout.cy, layout.radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(160,196,226,0.18)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(layout.cx, layout.cy, layout.radius, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function strokeGlobePolyline(samples, color, lineWidth = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  let started = false;
+  ctx.beginPath();
+  for (const sample of samples) {
+    const projected = projectGlobe(sample.lat, sample.lon, sample.alt || 0);
+    if (projected.z <= 0) {
+      if (started) {
+        ctx.stroke();
+        ctx.beginPath();
+        started = false;
+      }
+      continue;
+    }
+    if (!started) {
+      ctx.moveTo(projected.x, projected.y);
+      started = true;
+    } else {
+      ctx.lineTo(projected.x, projected.y);
+    }
+  }
+  if (started) ctx.stroke();
+}
+
+function drawGlobeGraticule() {
+  const samples = [];
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const line = [];
+    for (let lon = -180; lon <= 180; lon += 5) {
+      line.push({ lat, lon, alt: 0 });
+    }
+    samples.push(line);
+  }
+  for (let lon = -150; lon <= 180; lon += 30) {
+    const line = [];
+    for (let lat = -90; lat <= 90; lat += 4) {
+      line.push({ lat, lon, alt: 0 });
+    }
+    samples.push(line);
+  }
+  for (const line of samples) {
+    strokeGlobePolyline(line, 'rgba(134,173,206,0.20)');
+  }
 }
 
 function drawBackground() {
@@ -1568,9 +2495,13 @@ function drawBackground() {
 
 function heatValue(frameData, cellIndex, mode, fraction, nextData) {
   if (mode === 'off') return 0;
-  const source = frameData[mode][cellIndex];
+  const source = mode === 'diff'
+    ? frameData.group1[cellIndex] - frameData.group4[cellIndex]
+    : frameData[mode][cellIndex];
   if (!nextData) return source;
-  const target = nextData[mode][cellIndex];
+  const target = mode === 'diff'
+    ? nextData.group1[cellIndex] - nextData.group4[cellIndex]
+    : nextData[mode][cellIndex];
   return source + (target - source) * fraction;
 }
 
@@ -1593,6 +2524,16 @@ function heatColor(value, mode, peak) {
 }
 
 function updateLegend(mode, peak) {
+  if (state.projectionMode === 'globe') {
+    legendTitleEl.textContent = 'Heatmap Legend';
+    legendBarEl.style.background = 'linear-gradient(90deg,#0f1724,#2a4058)';
+    legendMinEl.textContent = 'map only';
+    legendMidEl.textContent = '';
+    legendMaxEl.textContent = '';
+    legendNoteEl.textContent = 'Heatmap colors are shown only in map projection. Globe mode focuses on the shell point distribution.';
+    return;
+  }
+
   if (mode === 'off') {
     legendTitleEl.textContent = 'Heatmap Legend';
     legendBarEl.style.background = 'linear-gradient(90deg,#0f1724,#2a4058)';
@@ -1660,21 +2601,72 @@ function drawHeatmap(frame) {
   }
 }
 
-function visibleSatellites() {
-  return DATA.satellites.filter(item => state.visibleShells.has(item.shellId));
+function satelliteLifecycle(satellite, currentMs) {
+  if (Number.isFinite(satellite.launchMs) && currentMs < satellite.launchMs) {
+    return { visible: false, highlight: false, phase: 'prelaunch' };
+  }
+  if (Number.isFinite(satellite.decayMs) && currentMs >= satellite.decayMs) {
+    return { visible: false, highlight: false, phase: 'postdecay' };
+  }
+  const launchHighlight = WINDOW_STATE.data.eventType === 'launch'
+    && state.highlightNorads.has(satellite.norad)
+    && Number.isFinite(state.highlightTimeMs)
+    && currentMs >= state.highlightTimeMs
+    && currentMs < state.highlightTimeMs + launchHighlightMs();
+  const decayHighlight = WINDOW_STATE.data.eventType === 'decay'
+    && state.highlightNorads.has(satellite.norad)
+    && Number.isFinite(state.highlightTimeMs)
+    && currentMs >= state.highlightTimeMs - decayHighlightMs()
+    && currentMs < state.highlightTimeMs;
+  return {
+    visible: true,
+    highlight: launchHighlight || decayHighlight,
+    phase: decayHighlight ? 'decay' : launchHighlight ? 'launch' : 'steady',
+  };
 }
 
-function drawGeodesicSegment(left, right, color) {
-  if (left[0] === right[0] && left[1] === right[1]) return;
+function visibleSatellites() {
+  if (state.visibleSatelliteCache) return state.visibleSatelliteCache;
+  state.visibleSatelliteCache = DATA.satellites.filter(item => state.visibleShells.has(item.shellId));
+  return state.visibleSatelliteCache;
+}
+
+function buildSegmentSamples(left, right) {
+  if (left[0] === right[0] && left[1] === right[1]) return [];
   const distanceDeg = greatCircleDistance(left, right) * 180 / Math.PI;
   const steps = Math.max(8, Math.ceil(distanceDeg / 2));
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  let previous = null;
-  let open = false;
+  const samples = [];
   for (let step = 0; step <= steps; step += 1) {
     const point = greatCirclePoint(left, right, step / steps);
-    const projected = project(point.lat, point.lon);
+    samples.push({ lat: point.lat, lon: point.lon, alt: 0 });
+  }
+  return samples;
+}
+
+function getSegmentSamples(satellite, left, right, leftIndex, rightIndex) {
+  if (leftIndex === rightIndex) return [];
+  let cache = state.segmentCache.get(satellite);
+  if (!cache) {
+    cache = new Map();
+    state.segmentCache.set(satellite, cache);
+  }
+  const key = `${leftIndex}:${rightIndex}`;
+  let samples = cache.get(key);
+  if (!samples) {
+    samples = buildSegmentSamples(left, right);
+    cache.set(key, samples);
+  }
+  return samples;
+}
+
+function drawGeodesicSegment(samples, color, lineWidth = 1) {
+  if (!samples.length) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  let previous = null;
+  let open = false;
+  for (const sample of samples) {
+    const projected = project(sample.lat, sample.lon);
     if (!previous || Math.abs(projected.x - previous.x) > width * 0.5) {
       if (open) ctx.stroke();
       ctx.beginPath();
@@ -1688,32 +2680,108 @@ function drawGeodesicSegment(left, right, color) {
   if (open) ctx.stroke();
 }
 
+function drawGlobeGeodesicSegment(samples, color, lineWidth = 1) {
+  if (!samples.length) return;
+  strokeGlobePolyline(samples, color, lineWidth);
+}
+
 function drawSatellites(frame) {
   const satellites = visibleSatellites();
-  satelliteCountEl.textContent = satellites.length.toString();
+  const currentMs = frameTimeMs(frame);
+  let displayedSatellites = 0;
   let hovered = null;
   for (const satellite of satellites) {
+    const lifecycle = satelliteLifecycle(satellite, currentMs);
+    if (!lifecycle.visible) continue;
+    displayedSatellites += 1;
     const point = interpolatePosition(satellite.positions, frame);
     const current = project(point.lat, point.lon);
-    drawGeodesicSegment(point.left, point.right, `${satellite.color}55`);
+    const segmentColor = lifecycle.highlight ? 'rgba(255,244,180,0.95)' : `${satellite.color}55`;
+    drawGeodesicSegment(
+      getSegmentSamples(satellite, point.left, point.right, point.leftIndex, point.rightIndex),
+      segmentColor,
+      lifecycle.highlight ? 2.4 : 1
+    );
+    if (lifecycle.highlight) {
+      ctx.strokeStyle = 'rgba(255,244,180,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, 6.1, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.fillStyle = satellite.color;
     ctx.beginPath();
-    ctx.arc(current.x, current.y, 2.35, 0, Math.PI * 2);
+    ctx.arc(current.x, current.y, lifecycle.highlight ? 3.4 : 2.35, 0, Math.PI * 2);
     ctx.fill();
     const distance = Math.hypot(pointerX - current.x, pointerY - current.y);
     if (distance < 8 && (!hovered || distance < hovered.distance)) {
-      hovered = { satellite, point, current, distance };
+      hovered = { satellite, point, current, distance, lifecycle };
     }
   }
+  satelliteCountEl.textContent = displayedSatellites.toString();
   if (hovered) {
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(hovered.current.x, hovered.current.y, 5.2, 0, Math.PI * 2);
     ctx.stroke();
-    hoverEl.innerHTML = `<strong>${hovered.satellite.satname}</strong><br>${hovered.satellite.displayName} / ${hovered.satellite.groupName}<br>NORAD: ${hovered.satellite.norad}<br>Lat/Lon: ${hovered.point.lat.toFixed(2)} deg, ${hovered.point.lon.toFixed(2)} deg<br>Altitude: ${hovered.point.alt.toFixed(1)} km`;
+    hoverEl.innerHTML = `<strong>${hovered.satellite.satname}</strong><br>${hovered.satellite.displayName} / ${hovered.satellite.groupName}<br>NORAD: ${hovered.satellite.norad}<br>Lat/Lon: ${hovered.point.lat.toFixed(2)} deg, ${hovered.point.lon.toFixed(2)} deg<br>Altitude: ${hovered.point.alt.toFixed(1)} km${hovered.lifecycle.phase === 'launch' ? '<br><strong>Launch highlight</strong>' : hovered.lifecycle.phase === 'decay' ? '<br><strong>Decay highlight</strong>' : ''}`;
   } else {
     hoverEl.textContent = 'Move the pointer near a satellite.';
+  }
+}
+
+function drawGlobe(frame) {
+  drawGlobeBackdrop();
+  drawGlobeGraticule();
+  updateLegend(heatmapMode.value, 0);
+  cellPeakEl.textContent = '--';
+  modePill.textContent = 'Projection: globe';
+  const satellites = visibleSatellites();
+  const currentMs = frameTimeMs(frame);
+  let displayedSatellites = 0;
+  let hovered = null;
+  for (const satellite of satellites) {
+    const lifecycle = satelliteLifecycle(satellite, currentMs);
+    if (!lifecycle.visible) continue;
+    const point = interpolatePosition(satellite.positions, frame);
+    drawGlobeGeodesicSegment(
+      getSegmentSamples(satellite, point.left, point.right, point.leftIndex, point.rightIndex),
+      lifecycle.highlight ? 'rgba(255,244,180,0.95)' : `${satellite.color}55`,
+      lifecycle.highlight ? 2.4 : 1
+    );
+    const current = projectGlobe(point.lat, point.lon, point.alt);
+    if (current.z <= 0) {
+      continue;
+    }
+    displayedSatellites += 1;
+    const radius = Math.max(1.8, 2.15 + point.alt / 2200) + (lifecycle.highlight ? 1.0 : 0);
+    if (lifecycle.highlight) {
+      ctx.strokeStyle = 'rgba(255,244,180,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(current.x, current.y, radius + 3.4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = satellite.color;
+    ctx.beginPath();
+    ctx.arc(current.x, current.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    const distance = Math.hypot(pointerX - current.x, pointerY - current.y);
+    if (distance < 10 && (!hovered || distance < hovered.distance)) {
+      hovered = { satellite, point, current, distance, lifecycle };
+    }
+  }
+  satelliteCountEl.textContent = displayedSatellites.toString();
+  if (hovered) {
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(hovered.current.x, hovered.current.y, 6.0, 0, Math.PI * 2);
+    ctx.stroke();
+    hoverEl.innerHTML = `<strong>${hovered.satellite.satname}</strong><br>${hovered.satellite.displayName} / ${hovered.satellite.groupName}<br>NORAD: ${hovered.satellite.norad}<br>Lat/Lon: ${hovered.point.lat.toFixed(2)} deg, ${hovered.point.lon.toFixed(2)} deg<br>Altitude: ${hovered.point.alt.toFixed(1)} km${hovered.lifecycle.phase === 'launch' ? '<br><strong>Launch highlight</strong>' : hovered.lifecycle.phase === 'decay' ? '<br><strong>Decay highlight</strong>' : ''}`;
+  } else {
+    hoverEl.textContent = 'Drag to rotate the globe. Move the pointer near a front-side satellite.';
   }
 }
 
@@ -1729,17 +2797,17 @@ function drawLabels() {
 }
 
 function draw() {
-  drawBackground();
-  drawHeatmap(currentFrame);
-  drawLabels();
-  drawSatellites(currentFrame);
-  const leftIndex = Math.max(0, Math.floor(currentFrame));
-  const rightIndex = Math.min(DATA.frames.length - 1, Math.ceil(currentFrame));
-  const fraction = Math.max(0, Math.min(1, currentFrame - leftIndex));
-  const leftDate = new Date(DATA.frames[leftIndex]);
-  const rightDate = new Date(DATA.frames[rightIndex]);
-  const currentTime = new Date(leftDate.getTime() + (rightDate.getTime() - leftDate.getTime()) * fraction);
+  if (state.projectionMode === 'globe') {
+    drawGlobe(currentFrame);
+  } else {
+    drawBackground();
+    drawHeatmap(currentFrame);
+    drawLabels();
+    drawSatellites(currentFrame);
+  }
+  const currentTime = new Date(frameTimeMs(currentFrame));
   timePill.textContent = currentTime.toISOString();
+  updateEventControls(currentTime.getTime());
 }
 
 function tick(now) {
@@ -1749,7 +2817,11 @@ function tick(now) {
     const speed = Number(speedSelect.value);
     currentFrame += deltaSeconds * speed;
     const maxFrame = DATA.frames.length - 1;
-    if (currentFrame > maxFrame) currentFrame -= maxFrame;
+    if (currentFrame > maxFrame) {
+      currentFrame = maxFrame;
+      playing = false;
+      playPause.textContent = 'Play';
+    }
     frameSlider.value = Math.round(currentFrame).toString();
     draw();
   }
@@ -1760,18 +2832,50 @@ playPause.addEventListener('click', () => {
   playing = !playing;
   playPause.textContent = playing ? 'Pause' : 'Play';
 });
+nextLaunchBtn.addEventListener('click', () => {
+  void jumpToNextEvent('launch');
+});
+nextDecayBtn.addEventListener('click', () => {
+  void jumpToNextEvent('decay');
+});
+projectionToggle.addEventListener('click', () => {
+  state.projectionMode = state.projectionMode === 'map' ? 'globe' : 'map';
+  updateProjectionToggle();
+  draw();
+});
 frameSlider.addEventListener('input', () => {
   currentFrame = Number(frameSlider.value);
   draw();
 });
 heatmapMode.addEventListener('change', draw);
+canvas.addEventListener('pointerdown', event => {
+  if (state.projectionMode !== 'globe') return;
+  state.dragging = true;
+  state.dragLastX = event.clientX;
+  state.dragLastY = event.clientY;
+  if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+});
 canvas.addEventListener('pointermove', event => {
   const rect = canvas.getBoundingClientRect();
   pointerX = event.clientX - rect.left;
   pointerY = event.clientY - rect.top;
+  if (state.projectionMode === 'globe' && state.dragging) {
+    state.globeYaw += (event.clientX - state.dragLastX) * 0.008;
+    state.globePitch += (event.clientY - state.dragLastY) * 0.008;
+    state.globePitch = Math.max(-1.25, Math.min(1.25, state.globePitch));
+    state.dragLastX = event.clientX;
+    state.dragLastY = event.clientY;
+  }
   draw();
 });
+canvas.addEventListener('pointerup', () => {
+  state.dragging = false;
+});
+canvas.addEventListener('pointercancel', () => {
+  state.dragging = false;
+});
 canvas.addEventListener('pointerleave', () => {
+  state.dragging = false;
   pointerX = -1e9;
   pointerY = -1e9;
   draw();
@@ -1779,7 +2883,20 @@ canvas.addEventListener('pointerleave', () => {
 window.addEventListener('resize', resize);
 
 frameSlider.max = String(Math.max(0, DATA.frames.length - 1));
+state.events = {
+  launches: DATA.events
+    .filter(item => item.type === 'launch')
+    .map(item => ({ ...item, timeMs: Date.parse(item.timeUtc) }))
+    .sort((left, right) => left.timeMs - right.timeMs),
+  decays: DATA.events
+    .filter(item => item.type === 'decay')
+    .map(item => ({ ...item, timeMs: Date.parse(item.timeUtc) }))
+    .sort((left, right) => left.timeMs - right.timeMs),
+};
+currentFrame = frameForTimeMs(Date.parse(DATA.meta.centerUtc));
+frameSlider.value = Math.round(currentFrame).toString();
 buildShellChecks();
+updateProjectionToggle();
 resize();
 requestAnimationFrame(tick);
 </script>"#,
@@ -1804,7 +2921,14 @@ fn filter_active_records(
     let mut kept = Vec::new();
     let mut stale = 0usize;
     let mut decayed = 0usize;
+    let mut not_launched = 0usize;
     for record in records {
+        if let Some(launch_utc) = parse_launch_date_utc(&record.launch_date) {
+            if launch_utc > center_utc {
+                not_launched += 1;
+                continue;
+            }
+        }
         if let Some(decay_utc) = parse_optional_utc(&record.decay_date_text) {
             if decay_utc <= center_utc {
                 decayed += 1;
@@ -1821,12 +2945,27 @@ fn filter_active_records(
         }
     }
     eprintln!(
-        "Filtered records to {} active satellites (skipped {} decayed, {} stale)",
+        "Filtered records to {} active satellites (skipped {} future-launch, {} decayed, {} stale)",
         kept.len(),
+        not_launched,
         decayed,
         stale
     );
     kept
+}
+
+fn record_is_active_at(record: &LatestTleRecord, frame_utc: DateTime<Utc>) -> bool {
+    if let Some(launch_utc) = parse_launch_date_utc(&record.launch_date) {
+        if frame_utc < launch_utc {
+            return false;
+        }
+    }
+    if let Some(decay_utc) = parse_optional_utc(&record.decay_date_text) {
+        if frame_utc >= decay_utc {
+            return false;
+        }
+    }
+    true
 }
 
 fn compare_norad(left: &str, right: &str) -> std::cmp::Ordering {
@@ -1877,13 +3016,21 @@ fn parse_optional_utc(value: &str) -> Option<DateTime<Utc>> {
     if value.trim().is_empty() {
         return None;
     }
-    parse_iso_utc(value)
-        .ok()
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(&format!("{}T00:00:00", value), "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
-        })
+    parse_iso_utc(value).ok().or_else(|| {
+        NaiveDateTime::parse_from_str(&format!("{}T00:00:00", value), "%Y-%m-%dT%H:%M:%S")
+            .ok()
+            .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+    })
+}
+
+fn parse_launch_date_utc(value: &str) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let date = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").ok()?;
+    let naive = date.and_hms_opt(0, 0, 0)?;
+    Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
 }
 
 fn format_iso_utc(value: &DateTime<Utc>) -> String {
@@ -2064,12 +3211,15 @@ fn duration_to_minutes(duration: Duration) -> io::Result<f64> {
 }
 
 fn column_index(headers: &[&str], name: &str) -> io::Result<usize> {
-    headers.iter().position(|header| *header == name).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("missing column {}", name),
-        )
-    })
+    headers
+        .iter()
+        .position(|header| *header == name)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing column {}", name),
+            )
+        })
 }
 
 fn parse_field(fields: &[&str], index: usize, name: &str) -> io::Result<f64> {
@@ -2104,7 +3254,8 @@ fn sql_nullable(value: Option<&str>) -> String {
 }
 
 fn sql_nullable_path(value: Option<&PathBuf>) -> String {
-    value.map(|path| sql_string(&path.display().to_string()))
+    value
+        .map(|path| sql_string(&path.display().to_string()))
         .unwrap_or_else(|| "NULL".to_string())
 }
 

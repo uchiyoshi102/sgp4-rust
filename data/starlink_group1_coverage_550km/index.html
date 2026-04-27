@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starlink Group 1 Coverage at 550 km / 25 deg</title>
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+>
+<style>
+:root{
+  --bg:#f2efe7;
+  --panel:#fffdf8;
+  --line:#d7d0c1;
+  --ink:#18212a;
+  --muted:#5f6b78;
+  --sea:#a9cbe3;
+  --accent:#d96732;
+  --accent-soft:rgba(217,103,50,.16);
+  --cyan:#2a6f97;
+  --cyan-soft:rgba(42,111,151,.18);
+  --shadow:0 24px 70px rgba(35,37,41,.14);
+}
+html,body{height:100%}
+body{
+  margin:0;
+  color:var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(217,103,50,.10), transparent 24%),
+    radial-gradient(circle at top right, rgba(42,111,151,.12), transparent 28%),
+    linear-gradient(180deg, #f6f2ea, #ece6d9);
+  font-family:"Avenir Next", "Segoe UI", sans-serif;
+}
+.page{
+  display:grid;
+  grid-template-columns:minmax(0,1.65fr) minmax(320px,430px);
+  min-height:100vh;
+}
+.map-panel{
+  padding:20px;
+}
+.side{
+  display:grid;
+  align-content:start;
+  gap:14px;
+  padding:20px 18px 24px;
+  background:rgba(255,253,248,.86);
+  border-left:1px solid rgba(215,208,193,.85);
+  backdrop-filter:blur(14px);
+}
+.hero{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:18px;
+  margin-bottom:14px;
+}
+.eyebrow{
+  margin:0 0 6px;
+  color:var(--muted);
+  font:600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+}
+h1{
+  margin:0;
+  font:600 clamp(28px, 4vw, 44px)/1.03 Georgia, "Times New Roman", serif;
+}
+.lede{
+  max-width:72ch;
+  margin:10px 0 0;
+  color:var(--muted);
+  font-size:15px;
+  line-height:1.65;
+}
+.map-shell{
+  position:relative;
+  overflow:hidden;
+  border:1px solid rgba(142,151,164,.42);
+  border-radius:26px;
+  box-shadow:var(--shadow);
+  background:linear-gradient(180deg, #d8e5ef, #f6f2ea);
+}
+#map{
+  width:100%;
+  height:min(78vh, 980px);
+}
+.map-caption{
+  position:absolute;
+  left:16px;
+  right:16px;
+  bottom:16px;
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  pointer-events:none;
+}
+.pill{
+  padding:10px 14px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.58);
+  background:rgba(24,33,42,.72);
+  color:#eef4f7;
+  font:600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.card{
+  padding:15px 15px 16px;
+  border:1px solid var(--line);
+  border-radius:18px;
+  background:linear-gradient(180deg, rgba(255,255,255,.86), rgba(250,246,238,.92));
+  box-shadow:0 10px 24px rgba(37,41,46,.06);
+}
+.card h2{
+  margin:0 0 10px;
+  font-size:15px;
+}
+.muted{
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.55;
+}
+.stats{
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0,1fr));
+  gap:10px;
+}
+.stat{
+  padding:11px 12px;
+  border:1px solid rgba(215,208,193,.88);
+  border-radius:14px;
+  background:#fffef9;
+}
+.stat strong{
+  display:block;
+  font-size:22px;
+  line-height:1.05;
+}
+.stat span{
+  display:block;
+  margin-top:4px;
+  color:var(--muted);
+  font:600 11px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.grid{
+  display:grid;
+  gap:10px;
+}
+.controls{
+  display:grid;
+  gap:10px;
+}
+.inline{
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0,1fr));
+  gap:10px;
+}
+label{
+  display:block;
+  margin:0 0 6px;
+  color:var(--muted);
+  font:600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+input,button,select{
+  width:100%;
+  box-sizing:border-box;
+  border:1px solid rgba(126,138,152,.42);
+  border-radius:12px;
+  padding:10px 12px;
+  color:var(--ink);
+  background:#fffef9;
+  font:600 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+button{
+  cursor:pointer;
+  transition:background-color .16s ease, border-color .16s ease, transform .16s ease;
+}
+button:hover{
+  border-color:#6c8092;
+  background:#fff8ef;
+  transform:translateY(-1px);
+}
+.primary{
+  border-color:rgba(217,103,50,.54);
+  background:#fff4ee;
+  color:#8f3f19;
+}
+.chips{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.mode-grid{
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0,1fr));
+  gap:8px;
+}
+.chip{
+  width:auto;
+  padding:8px 11px;
+  border-radius:999px;
+  background:#f9f4ea;
+}
+.chip.active,
+.mode-button.active{
+  border-color:rgba(42,111,151,.4);
+  background:rgba(42,111,151,.10);
+  color:#184b69;
+}
+.mode-button{
+  padding:10px 12px;
+}
+.list{
+  display:grid;
+  gap:8px;
+}
+.item{
+  display:grid;
+  gap:8px;
+  padding:10px 11px;
+  border:1px solid rgba(215,208,193,.88);
+  border-radius:14px;
+  background:#fffef9;
+}
+.item-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.swatch{
+  width:10px;
+  height:10px;
+  border-radius:999px;
+  display:inline-block;
+  margin-right:8px;
+}
+.item strong{
+  font-size:13px;
+}
+.item span{
+  color:var(--muted);
+  font-size:12px;
+}
+.item-actions{
+  display:flex;
+  gap:8px;
+}
+.item-actions button{
+  padding:8px 10px;
+}
+.note{
+  padding-top:2px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.55;
+}
+.note a{
+  color:var(--accent);
+}
+.note a:hover{
+  color:#8f3f19;
+}
+.leaflet-container{
+  background:var(--sea);
+  font-family:inherit;
+}
+.leaflet-tooltip.footprint-label{
+  padding:6px 9px;
+  border:0;
+  border-radius:999px;
+  background:rgba(24,33,42,.76);
+  color:#f4f7f8;
+  box-shadow:none;
+}
+@media (max-width: 1120px){
+  .page{grid-template-columns:1fr}
+  .side{border-left:0;border-top:1px solid rgba(215,208,193,.85)}
+  #map{height:62vh}
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <section class="map-panel">
+    <div class="hero">
+      <div>
+        <p class="eyebrow">Static Coverage Viewer</p>
+        <h1>Starlink Group 1 Coverage</h1>
+        <p class="lede">
+          This viewer fixes the shell altitude at <strong>550 km</strong> and the minimum elevation mask at <strong>25&deg;</strong>, then draws the resulting ground footprint on an accurate world map. Click anywhere to move the active sub-satellite point, or pin multiple footprints to compare spacing.
+        </p>
+      </div>
+    </div>
+    <div class="map-shell">
+      <div id="map" aria-label="World map showing Starlink coverage footprint"></div>
+      <div class="map-caption">
+        <div class="pill" id="activeSummary">Active point: Tokyo</div>
+        <div class="pill">550 km altitude / 25&deg; min elevation</div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>Coverage Geometry</h2>
+      <div class="stats">
+        <div class="stat">
+          <strong id="radiusValue">0 km</strong>
+          <span>Surface Radius</span>
+        </div>
+        <div class="stat">
+          <strong id="diameterValue">0 km</strong>
+          <span>Footprint Diameter</span>
+        </div>
+        <div class="stat">
+          <strong id="angleValue">0&deg;</strong>
+          <span>Earth Central Angle</span>
+        </div>
+        <div class="stat">
+          <strong id="slantValue">0 km</strong>
+          <span>Edge Slant Range</span>
+        </div>
+      </div>
+      <p class="note" id="geometryNote"></p>
+    </section>
+
+    <section class="card">
+      <h2>Active Sub-Satellite Point</h2>
+      <div class="controls">
+        <div>
+          <label>Tracking Mode</label>
+          <div class="mode-grid">
+            <button class="mode-button active" id="fixedModeButton" type="button">Fixed Point</button>
+            <button class="mode-button" id="cursorModeButton" type="button">Cursor-linked</button>
+          </div>
+        </div>
+        <div class="inline">
+          <div>
+            <label for="latInput">Latitude</label>
+            <input id="latInput" type="number" min="-90" max="90" step="0.0001">
+          </div>
+          <div>
+            <label for="lonInput">Longitude</label>
+            <input id="lonInput" type="number" min="-180" max="180" step="0.0001">
+          </div>
+        </div>
+        <div class="inline">
+          <button class="primary" id="applyButton">Move Footprint</button>
+          <button id="pinButton">Fix Current Footprint</button>
+        </div>
+        <div class="inline">
+          <div class="stat">
+            <strong id="latValue">0.0000&deg;</strong>
+            <span>Latitude</span>
+          </div>
+          <div class="stat">
+            <strong id="lonValue">0.0000&deg;</strong>
+            <span>Longitude</span>
+          </div>
+        </div>
+      </div>
+      <p class="note" id="modeNote">Fixed mode keeps the footprint at one chosen sub-satellite point. Switch to cursor-linked mode to have the footprint follow the pointer over the map.</p>
+    </section>
+
+    <section class="card">
+      <h2>Preset Locations</h2>
+      <div class="chips" id="presetChips"></div>
+      <p class="note">The footprint size does not change with latitude at fixed altitude and elevation mask, but the map projection makes high-latitude footprints appear stretched horizontally.</p>
+    </section>
+
+    <section class="card">
+      <h2>Ground Station And PoP Locations</h2>
+      <div class="controls">
+        <div>
+          <label for="groundStationSearchInput">Type to search gateways and PoPs</label>
+          <input id="groundStationSearchInput" type="search" placeholder="Search by name, country, region, facility, status, source">
+        </div>
+        <div>
+          <label for="gatewayLocationSelect">Gateway locations</label>
+          <select id="gatewayLocationSelect"></select>
+        </div>
+        <div class="inline">
+          <button class="primary" id="applyGatewayButton">Use Selected Gateway</button>
+          <button id="toggleGatewayLayerButton">Reflect All Gateways</button>
+        </div>
+        <div>
+          <label for="popLocationSelect">PoP locations</label>
+          <select id="popLocationSelect"></select>
+        </div>
+        <div class="inline">
+          <button class="primary" id="applyPopButton">Use Selected PoP</button>
+          <button id="togglePopLayerButton">Reflect All PoPs</button>
+        </div>
+        <div class="muted" id="groundStationCountSummary">Showing 0 of 0 gateways and 0 of 0 PoPs. Displayed on map: 0 gateways, 0 PoPs.</div>
+      </div>
+      <p class="note">
+        Source:
+        <a href="https://www.starlinkinfo.com/starlink-ground-stations" target="_blank" rel="noreferrer">Starlink Ground Stations</a>
+        +
+        <a href="https://starlinkinsider.com/starlink-gateway-locations/" target="_blank" rel="noreferrer">Starlink Insider Gateway Locations</a>
+        +
+        <a href="https://starlink.com/am/support/article/45d1d256-171e-0f67-4895-5d248fa63b66" target="_blank" rel="noreferrer">Starlink PoP Locations</a>
+        +
+        <a href="https://danielja.ng/publications/geoToLeo_imc_2025.pdf" target="_blank" rel="noreferrer">Jang et al. IMC 2025</a>.
+        Selecting a location moves the active point. Gateway and PoP overlays are rendered as separate clickable marker layers.
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="item-head">
+        <h2 style="margin:0">Pinned Footprints</h2>
+        <button id="clearPinnedButton">Clear All</button>
+      </div>
+      <div class="list" id="pinnedList"></div>
+      <p class="note">In cursor-linked mode, double-click on the map to pin the current footprint. Pinned footprints keep their own color and label so you can compare likely shell spacing or regional overlap by eye.</p>
+    </section>
+
+    <section class="card">
+      <h2>Assumptions</h2>
+      <div class="grid muted">
+        <div><strong>Altitude:</strong> 550 km above the reference Earth radius.</div>
+        <div><strong>Elevation mask:</strong> 25&deg; minimum line-of-sight elevation.</div>
+        <div><strong>Earth radius:</strong> 6378.137 km.</div>
+        <div><strong>Map data:</strong> OpenStreetMap raster tiles via Leaflet.</div>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="ground_station_locations.js"></script>
+<script>
+const EARTH_RADIUS_KM = 6378.137;
+const ALTITUDE_KM = 550;
+const MIN_ELEVATION_DEG = 25;
+const PIN_COLORS = ['#d96732', '#2a6f97', '#719b4d', '#8a4fff', '#cc7a00', '#4b7d7a'];
+const PRESETS = [
+  { name: 'Tokyo', lat: 35.6762, lon: 139.6503 },
+  { name: 'Quito', lat: -0.1807, lon: -78.4678 },
+  { name: 'Honolulu', lat: 21.3069, lon: -157.8583 },
+  { name: 'London', lat: 51.5072, lon: -0.1276 },
+  { name: 'Cape Town', lat: -33.9249, lon: 18.4241 },
+  { name: 'Reykjavik', lat: 64.1466, lon: -21.9426 },
+];
+const GROUND_STATION_LOCATIONS = window.STARLINK_GROUND_STATION_LOCATIONS || [];
+const GROUND_STATION_NAME_COUNTS = GROUND_STATION_LOCATIONS.reduce((counts, location) => {
+  counts.set(location.name, (counts.get(location.name) || 0) + 1);
+  return counts;
+}, new Map());
+
+const geometry = computeCoverageGeometry(EARTH_RADIUS_KM, ALTITUDE_KM, MIN_ELEVATION_DEG);
+const state = {
+  active: { ...PRESETS[0] },
+  mode: 'fixed',
+  pinned: [],
+  nextPinIndex: 1,
+  showGatewayLocations: false,
+  showPopLocations: false,
+  groundStationSearch: '',
+};
+
+const radiusValueEl = document.getElementById('radiusValue');
+const diameterValueEl = document.getElementById('diameterValue');
+const angleValueEl = document.getElementById('angleValue');
+const slantValueEl = document.getElementById('slantValue');
+const geometryNoteEl = document.getElementById('geometryNote');
+const modeNoteEl = document.getElementById('modeNote');
+const latInput = document.getElementById('latInput');
+const lonInput = document.getElementById('lonInput');
+const latValueEl = document.getElementById('latValue');
+const lonValueEl = document.getElementById('lonValue');
+const activeSummaryEl = document.getElementById('activeSummary');
+const presetChipsEl = document.getElementById('presetChips');
+const pinnedListEl = document.getElementById('pinnedList');
+const applyButton = document.getElementById('applyButton');
+const pinButton = document.getElementById('pinButton');
+const clearPinnedButton = document.getElementById('clearPinnedButton');
+const fixedModeButton = document.getElementById('fixedModeButton');
+const cursorModeButton = document.getElementById('cursorModeButton');
+const groundStationSearchInput = document.getElementById('groundStationSearchInput');
+const gatewayLocationSelect = document.getElementById('gatewayLocationSelect');
+const popLocationSelect = document.getElementById('popLocationSelect');
+const groundStationCountSummary = document.getElementById('groundStationCountSummary');
+const applyGatewayButton = document.getElementById('applyGatewayButton');
+const applyPopButton = document.getElementById('applyPopButton');
+const toggleGatewayLayerButton = document.getElementById('toggleGatewayLayerButton');
+const togglePopLayerButton = document.getElementById('togglePopLayerButton');
+
+const map = L.map('map', {
+  worldCopyJump: true,
+  zoomControl: true,
+  minZoom: 2,
+  doubleClickZoom: false,
+}).setView([20, 0], 2);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 7,
+  minZoom: 2,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+}).addTo(map);
+
+const pinnedLayer = L.layerGroup().addTo(map);
+const activeLayer = L.layerGroup().addTo(map);
+const gatewayLayer = L.layerGroup();
+const popLayer = L.layerGroup();
+
+const activeMarker = L.marker([state.active.lat, state.active.lon], {
+  draggable: true,
+  title: 'Active sub-satellite point',
+}).addTo(activeLayer);
+
+const activeFootprint = L.polygon([], {
+  color: '#2a6f97',
+  weight: 2.4,
+  fillColor: '#2a6f97',
+  fillOpacity: 0.16,
+  smoothFactor: 0,
+  noClip: true,
+}).addTo(activeLayer);
+
+activeMarker.on('dragend', () => {
+  const { lat, lng } = activeMarker.getLatLng();
+  setMode('fixed');
+  setActiveCenter(lat, lng, 'Custom point');
+});
+
+map.on('click', (event) => {
+  if (state.mode !== 'fixed') return;
+  setActiveCenter(event.latlng.lat, event.latlng.lng, 'Custom point');
+});
+
+map.on('mousemove', (event) => {
+  if (state.mode !== 'cursor') return;
+  setActiveCenter(event.latlng.lat, event.latlng.lng, 'Cursor-linked point');
+});
+
+map.on('dblclick', (event) => {
+  if (state.mode !== 'cursor') return;
+  if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+  setActiveCenter(event.latlng.lat, event.latlng.lng, 'Cursor-linked point');
+  pinActiveFootprint();
+});
+
+applyButton.addEventListener('click', () => {
+  setMode('fixed');
+  setActiveCenter(Number(latInput.value), Number(lonInput.value), 'Custom point');
+});
+
+pinButton.addEventListener('click', () => {
+  setMode('fixed');
+  setActiveCenter(state.active.lat, state.active.lon, 'Fixed point');
+});
+
+clearPinnedButton.addEventListener('click', () => {
+  state.pinned = [];
+  renderPinned();
+});
+
+fixedModeButton.addEventListener('click', () => {
+  setMode('fixed');
+  setActiveCenter(
+    state.active.lat,
+    state.active.lon,
+    state.active.name === 'Cursor-linked point' ? 'Fixed point' : state.active.name
+  );
+});
+
+cursorModeButton.addEventListener('click', () => {
+  setMode('cursor');
+});
+
+applyGatewayButton.addEventListener('click', applySelectedGatewayLocation);
+applyPopButton.addEventListener('click', applySelectedPopLocation);
+
+toggleGatewayLayerButton.addEventListener('click', () => {
+  state.showGatewayLocations = !state.showGatewayLocations;
+  renderGroundStationLayers();
+});
+
+togglePopLayerButton.addEventListener('click', () => {
+  state.showPopLocations = !state.showPopLocations;
+  renderGroundStationLayers();
+});
+
+groundStationSearchInput.addEventListener('input', () => {
+  state.groundStationSearch = groundStationSearchInput.value;
+  renderGroundStationSelects();
+  renderGroundStationLayers();
+});
+
+latInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') applyButton.click();
+});
+
+lonInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') applyButton.click();
+});
+
+renderPresetChips();
+renderGroundStationSelects();
+renderGeometry();
+renderPinned();
+renderMode();
+renderGroundStationLayers();
+setActiveCenter(state.active.lat, state.active.lon, state.active.name);
+
+function computeCoverageGeometry(earthRadiusKm, altitudeKm, minElevationDeg) {
+  const elevationRad = minElevationDeg * Math.PI / 180;
+  const orbitRadiusKm = earthRadiusKm + altitudeKm;
+  const cosAngle = (
+    earthRadiusKm * Math.cos(elevationRad) ** 2 +
+    Math.sin(elevationRad) * Math.sqrt(orbitRadiusKm ** 2 - (earthRadiusKm * Math.cos(elevationRad)) ** 2)
+  ) / orbitRadiusKm;
+  const centralAngleRad = Math.acos(cosAngle);
+  const surfaceRadiusKm = earthRadiusKm * centralAngleRad;
+  const slantRangeKm = Math.sqrt(
+    orbitRadiusKm ** 2 + earthRadiusKm ** 2 - 2 * orbitRadiusKm * earthRadiusKm * Math.cos(centralAngleRad)
+  );
+  const areaKm2 = 2 * Math.PI * earthRadiusKm ** 2 * (1 - Math.cos(centralAngleRad));
+
+  return {
+    centralAngleRad,
+    centralAngleDeg: centralAngleRad * 180 / Math.PI,
+    surfaceRadiusKm,
+    diameterKm: surfaceRadiusKm * 2,
+    slantRangeKm,
+    areaKm2,
+  };
+}
+
+function renderGeometry() {
+  radiusValueEl.textContent = `${formatKm(geometry.surfaceRadiusKm)} km`;
+  diameterValueEl.textContent = `${formatKm(geometry.diameterKm)} km`;
+  angleValueEl.textContent = `${geometry.centralAngleDeg.toFixed(3)}°`;
+  slantValueEl.textContent = `${formatKm(geometry.slantRangeKm)} km`;
+  geometryNoteEl.textContent =
+    `At the edge of the footprint, the line of sight falls to the 25° mask. ` +
+    `The covered spherical-cap area is about ${formatMillions(geometry.areaKm2)} million km².`;
+}
+
+function renderMode() {
+  const isFixed = state.mode === 'fixed';
+  fixedModeButton.classList.toggle('active', isFixed);
+  cursorModeButton.classList.toggle('active', !isFixed);
+  pinButton.disabled = isFixed;
+  modeNoteEl.textContent = isFixed
+    ? 'Fixed mode keeps the footprint at one chosen sub-satellite point. Switch to cursor-linked mode to have the footprint follow the pointer over the map.'
+    : 'Cursor-linked mode tracks the pointer over the map. Double-click to add a pin, or use Fix Current Footprint to freeze the current position.';
+  map.getContainer().style.cursor = isFixed ? '' : 'crosshair';
+  if (activeMarker.dragging) {
+    if (isFixed) {
+      activeMarker.dragging.enable();
+    } else {
+      activeMarker.dragging.disable();
+    }
+  }
+}
+
+function renderPresetChips() {
+  presetChipsEl.innerHTML = '';
+  PRESETS.forEach((preset) => {
+    const button = document.createElement('button');
+    button.className = `chip${state.active.name === preset.name ? ' active' : ''}`;
+    button.textContent = preset.name;
+    button.addEventListener('click', () => {
+      setActiveCenter(preset.lat, preset.lon, preset.name);
+      map.flyTo([preset.lat, preset.lon], Math.max(map.getZoom(), 3), { duration: 0.7 });
+    });
+    presetChipsEl.appendChild(button);
+  });
+}
+
+function formatGroundStationLabel(location) {
+  if (isPopLocation(location)) {
+    const facilitySuffix = location.facilityName ? ` (${location.facilityName})` : '';
+    return `${location.name} PoP${facilitySuffix}, ${location.country}`;
+  }
+  const duplicatedName = (GROUND_STATION_NAME_COUNTS.get(location.name) || 0) > 1;
+  return duplicatedName
+    ? `${location.name}, ${location.region}, ${location.country}`
+    : `${location.name}, ${location.country}`;
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function groundStationLocationType(location) {
+  return location.locationType === 'pop' || location.region === 'PoP' ? 'pop' : 'gateway';
+}
+
+function isPopLocation(location) {
+  return groundStationLocationType(location) === 'pop';
+}
+
+function groundStationTypeLabel(location) {
+  return isPopLocation(location) ? 'PoP' : 'Gateway';
+}
+
+function groundStationSearchHaystack(location) {
+  const aliases = Array.isArray(location.aliases)
+    ? location.aliases
+    : location.aliases
+      ? [location.aliases]
+      : [];
+  return normalizeSearchText([
+    location.name,
+    location.country,
+    location.region,
+    location.continent,
+    groundStationTypeLabel(location),
+    location.facilityName,
+    location.address,
+    location.status,
+    location.source,
+    ...aliases,
+  ].filter(Boolean).join(' '));
+}
+
+function filteredGroundStationLocations() {
+  const query = normalizeSearchText(state.groundStationSearch);
+  if (!query) return GROUND_STATION_LOCATIONS;
+  return GROUND_STATION_LOCATIONS.filter(location => groundStationSearchHaystack(location).includes(query));
+}
+
+function filteredGroundStationLocationsByType(type, filteredLocations = filteredGroundStationLocations()) {
+  return filteredLocations.filter(location => groundStationLocationType(location) === type);
+}
+
+function totalGroundStationLocationCount(type) {
+  return GROUND_STATION_LOCATIONS.filter(location => groundStationLocationType(location) === type).length;
+}
+
+function updateGroundStationCountSummary(filteredLocations = filteredGroundStationLocations()) {
+  const filteredGateways = filteredGroundStationLocationsByType('gateway', filteredLocations);
+  const filteredPops = filteredGroundStationLocationsByType('pop', filteredLocations);
+  const displayedGatewayCount = state.showGatewayLocations ? filteredGateways.length : 0;
+  const displayedPopCount = state.showPopLocations ? filteredPops.length : 0;
+  groundStationCountSummary.textContent =
+    `Showing ${filteredGateways.length} of ${totalGroundStationLocationCount('gateway')} gateways and ` +
+    `${filteredPops.length} of ${totalGroundStationLocationCount('pop')} PoPs. ` +
+    `Displayed on map: ${displayedGatewayCount} gateways, ${displayedPopCount} PoPs.`;
+}
+
+function updateGroundStationToggle(button, type, isVisible, filteredLocations = filteredGroundStationLocations()) {
+  const hasSearch = Boolean(normalizeSearchText(state.groundStationSearch));
+  const typeLabel = type === 'pop' ? 'PoPs' : 'Gateways';
+  const typeLocations = filteredGroundStationLocationsByType(type, filteredLocations);
+  button.disabled = typeLocations.length === 0;
+  if (!typeLocations.length) {
+    button.textContent = `No Matching ${typeLabel}`;
+  } else if (isVisible) {
+    button.textContent = hasSearch ? `Hide Matching ${typeLabel}` : `Hide All ${typeLabel}`;
+  } else {
+    button.textContent = hasSearch ? `Reflect Matching ${typeLabel}` : `Reflect All ${typeLabel}`;
+  }
+}
+
+function updateGroundStationControls(filteredLocations = filteredGroundStationLocations()) {
+  const gatewayLocations = filteredGroundStationLocationsByType('gateway', filteredLocations);
+  const popLocations = filteredGroundStationLocationsByType('pop', filteredLocations);
+  applyGatewayButton.disabled = gatewayLocations.length === 0;
+  applyPopButton.disabled = popLocations.length === 0;
+  updateGroundStationToggle(toggleGatewayLayerButton, 'gateway', state.showGatewayLocations, filteredLocations);
+  updateGroundStationToggle(togglePopLayerButton, 'pop', state.showPopLocations, filteredLocations);
+  updateGroundStationCountSummary(filteredLocations);
+}
+
+function sortGroundStationLocations(locations) {
+  return [...locations].sort((left, right) => {
+    if (left.continent !== right.continent) return left.continent.localeCompare(right.continent);
+    if (left.country !== right.country) return left.country.localeCompare(right.country);
+    if (left.name !== right.name) return left.name.localeCompare(right.name);
+    return left.region.localeCompare(right.region);
+  });
+}
+
+function renderGroundStationSelect(select, locations, emptyLabel) {
+  const previousValue = select.value;
+  select.innerHTML = '';
+  let currentOptGroup = null;
+  let currentContinent = '';
+  const sortedLocations = sortGroundStationLocations(locations);
+  if (!sortedLocations.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = emptyLabel;
+    select.appendChild(option);
+    select.disabled = true;
+    return;
+  }
+
+  for (const location of sortedLocations) {
+    if (location.continent !== currentContinent) {
+      currentContinent = location.continent;
+      currentOptGroup = document.createElement('optgroup');
+      currentOptGroup.label = currentContinent;
+      select.appendChild(currentOptGroup);
+    }
+    const option = document.createElement('option');
+    option.value = location.id;
+    option.textContent = formatGroundStationLabel(location);
+    currentOptGroup.appendChild(option);
+  }
+
+  select.disabled = false;
+  const currentSelection = sortedLocations.find(location => location.id === previousValue);
+  const preferred = currentSelection
+    || sortedLocations.find(location => location.country === 'Japan')
+    || sortedLocations[0];
+  if (preferred) select.value = preferred.id;
+}
+
+function renderGroundStationSelects() {
+  const filteredLocations = filteredGroundStationLocations();
+  renderGroundStationSelect(
+    gatewayLocationSelect,
+    filteredGroundStationLocationsByType('gateway', filteredLocations),
+    'No matching gateways'
+  );
+  renderGroundStationSelect(
+    popLocationSelect,
+    filteredGroundStationLocationsByType('pop', filteredLocations),
+    'No matching PoPs'
+  );
+  updateGroundStationControls(filteredLocations);
+}
+
+function selectedGatewayLocation() {
+  return GROUND_STATION_LOCATIONS.find(location => location.id === gatewayLocationSelect.value) || null;
+}
+
+function selectedPopLocation() {
+  return GROUND_STATION_LOCATIONS.find(location => location.id === popLocationSelect.value) || null;
+}
+
+function applyGroundStation(location, options = {}) {
+  if (!location) return;
+  if (isPopLocation(location)) {
+    popLocationSelect.value = location.id;
+  } else {
+    gatewayLocationSelect.value = location.id;
+  }
+  setMode('fixed');
+  setActiveCenter(location.lat, location.lon, formatGroundStationLabel(location));
+  if (options.fly !== false) {
+    map.flyTo([location.lat, location.lon], Math.max(map.getZoom(), 3), { duration: 0.7 });
+  }
+}
+
+function applySelectedGatewayLocation() {
+  applyGroundStation(selectedGatewayLocation());
+}
+
+function applySelectedPopLocation() {
+  applyGroundStation(selectedPopLocation());
+}
+
+function renderGroundStationMarkers(layer, locations, style) {
+  layer.clearLayers();
+  for (const location of locations) {
+    const marker = L.circleMarker([location.lat, location.lon], style);
+    marker.bindTooltip(formatGroundStationLabel(location), { direction: 'top', offset: [0, -2] });
+    marker.on('click', () => {
+      applyGroundStation(location, { fly: false });
+    });
+    marker.addTo(layer);
+  }
+}
+
+function renderGroundStationLayers() {
+  const filteredLocations = filteredGroundStationLocations();
+  const gatewayLocations = state.showGatewayLocations
+    ? filteredGroundStationLocationsByType('gateway', filteredLocations)
+    : [];
+  const popLocations = state.showPopLocations
+    ? filteredGroundStationLocationsByType('pop', filteredLocations)
+    : [];
+  renderGroundStationMarkers(gatewayLayer, gatewayLocations, {
+    radius: 4.5,
+    color: '#8f3f19',
+    weight: 1.4,
+    fillColor: '#d96732',
+    fillOpacity: 0.85,
+  });
+  renderGroundStationMarkers(popLayer, popLocations, {
+    radius: 4.8,
+    color: '#194a8f',
+    weight: 1.4,
+    fillColor: '#4d8cff',
+    fillOpacity: 0.85,
+  });
+
+  if (gatewayLocations.length) {
+    if (!map.hasLayer(gatewayLayer)) gatewayLayer.addTo(map);
+  } else if (map.hasLayer(gatewayLayer)) {
+    map.removeLayer(gatewayLayer);
+  }
+  if (popLocations.length) {
+    if (!map.hasLayer(popLayer)) popLayer.addTo(map);
+  } else if (map.hasLayer(popLayer)) {
+    map.removeLayer(popLayer);
+  }
+
+  updateGroundStationControls(filteredLocations);
+  const visibleLocations = [...gatewayLocations, ...popLocations];
+  if (!visibleLocations.length) return;
+  const bounds = L.latLngBounds(visibleLocations.map(location => [location.lat, location.lon]));
+  if (bounds.isValid()) map.fitBounds(bounds.pad(0.08));
+}
+
+function renderPinned() {
+  pinnedLayer.clearLayers();
+  pinnedListEl.innerHTML = '';
+
+  if (!state.pinned.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No pinned footprints yet. In cursor-linked mode, double-click the map to pin the current footprint.';
+    pinnedListEl.appendChild(empty);
+    return;
+  }
+
+  state.pinned.forEach((pin) => {
+    const polygon = L.polygon(createFootprintPoints(pin.lat, pin.lon), {
+      color: pin.color,
+      weight: 2,
+      fillColor: pin.color,
+      fillOpacity: 0.11,
+      smoothFactor: 0,
+      noClip: true,
+    }).addTo(pinnedLayer);
+
+    polygon.bindTooltip(pin.name, {
+      className: 'footprint-label',
+      sticky: true,
+    });
+
+    L.circleMarker([pin.lat, pin.lon], {
+      radius: 5,
+      color: pin.color,
+      fillColor: pin.color,
+      fillOpacity: 1,
+      weight: 1.2,
+    }).addTo(pinnedLayer);
+
+    const item = document.createElement('div');
+    item.className = 'item';
+    item.innerHTML = `
+      <div class="item-head">
+        <div>
+          <strong><span class="swatch" style="background:${pin.color}"></span>${pin.name}</strong><br>
+          <span>${pin.lat.toFixed(4)}°, ${pin.lon.toFixed(4)}°</span>
+        </div>
+      </div>
+    `;
+
+    const actions = document.createElement('div');
+    actions.className = 'item-actions';
+
+    const focusButton = document.createElement('button');
+    focusButton.textContent = 'Focus';
+    focusButton.addEventListener('click', () => {
+      map.flyTo([pin.lat, pin.lon], Math.max(map.getZoom(), 3), { duration: 0.7 });
+    });
+
+    const removeButton = document.createElement('button');
+    removeButton.textContent = 'Remove';
+    removeButton.addEventListener('click', () => {
+      state.pinned = state.pinned.filter((entry) => entry.id !== pin.id);
+      renderPinned();
+    });
+
+    actions.appendChild(focusButton);
+    actions.appendChild(removeButton);
+    item.appendChild(actions);
+    pinnedListEl.appendChild(item);
+  });
+}
+
+function setMode(mode) {
+  state.mode = mode === 'cursor' ? 'cursor' : 'fixed';
+  renderMode();
+}
+
+function pinActiveFootprint() {
+  const pin = {
+    id: `pin-${Date.now()}-${state.nextPinIndex}`,
+    name: state.active.name === 'Cursor-linked point' || state.active.name === 'Fixed point' || state.active.name === 'Custom point'
+      ? `Pinned ${state.nextPinIndex}`
+      : `${state.active.name} pin`,
+    lat: state.active.lat,
+    lon: state.active.lon,
+    color: PIN_COLORS[state.pinned.length % PIN_COLORS.length],
+  };
+  state.nextPinIndex += 1;
+  state.pinned.push(pin);
+  renderPinned();
+}
+
+function setActiveCenter(lat, lon, name) {
+  const safeLat = clamp(lat, -85, 85);
+  const safeLon = wrapLongitude(lon);
+  state.active = {
+    lat: Number.isFinite(safeLat) ? safeLat : PRESETS[0].lat,
+    lon: Number.isFinite(safeLon) ? safeLon : PRESETS[0].lon,
+    name: name || 'Custom point',
+  };
+
+  activeMarker.setLatLng([state.active.lat, state.active.lon]);
+  activeFootprint.setLatLngs(createFootprintPoints(state.active.lat, state.active.lon));
+  activeFootprint.bindTooltip(state.active.name, {
+    className: 'footprint-label',
+    permanent: false,
+    sticky: true,
+  });
+
+  latInput.value = state.active.lat.toFixed(4);
+  lonInput.value = state.active.lon.toFixed(4);
+  latValueEl.textContent = `${state.active.lat.toFixed(4)}°`;
+  lonValueEl.textContent = `${state.active.lon.toFixed(4)}°`;
+  activeSummaryEl.textContent = state.mode === 'cursor'
+    ? `Cursor-linked: ${state.active.lat.toFixed(2)}°, ${state.active.lon.toFixed(2)}°`
+    : `Active point: ${state.active.name}`;
+
+  renderPresetChips();
+}
+
+function createFootprintPoints(lat, lon) {
+  const steps = 180;
+  const points = [];
+  for (let index = 0; index < steps; index += 1) {
+    const bearingDeg = index * 360 / steps;
+    const point = destinationPoint(lat, lon, bearingDeg, geometry.surfaceRadiusKm);
+    points.push([point.lat, wrapAroundReference(point.lon, lon)]);
+  }
+  return points;
+}
+
+function destinationPoint(latDeg, lonDeg, bearingDeg, distanceKm) {
+  const distanceRad = distanceKm / EARTH_RADIUS_KM;
+  const bearingRad = bearingDeg * Math.PI / 180;
+  const latRad = latDeg * Math.PI / 180;
+  const lonRad = lonDeg * Math.PI / 180;
+
+  const sinLat = Math.sin(latRad);
+  const cosLat = Math.cos(latRad);
+  const sinDistance = Math.sin(distanceRad);
+  const cosDistance = Math.cos(distanceRad);
+
+  const targetLat = Math.asin(
+    sinLat * cosDistance + cosLat * sinDistance * Math.cos(bearingRad)
+  );
+
+  const targetLon = lonRad + Math.atan2(
+    Math.sin(bearingRad) * sinDistance * cosLat,
+    cosDistance - sinLat * Math.sin(targetLat)
+  );
+
+  return {
+    lat: targetLat * 180 / Math.PI,
+    lon: wrapLongitude(targetLon * 180 / Math.PI),
+  };
+}
+
+function wrapLongitude(lon) {
+  if (!Number.isFinite(lon)) return NaN;
+  return ((lon + 540) % 360) - 180;
+}
+
+function wrapAroundReference(lon, referenceLon) {
+  let value = lon;
+  while (value - referenceLon > 180) value -= 360;
+  while (value - referenceLon < -180) value += 360;
+  return value;
+}
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return NaN;
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatKm(value) {
+  return value >= 100 ? value.toFixed(1) : value.toFixed(2);
+}
+
+function formatMillions(value) {
+  return (value / 1_000_000).toFixed(2);
+}
+</script>
+</body>
+</html>

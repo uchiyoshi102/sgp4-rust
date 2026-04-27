@@ -346,12 +346,7 @@ main{grid-template-columns:1fr}
         "<div><label for=\"familySelect\">Family</label><select id=\"familySelect\"><option value=\"all\">All families</option>"
     )?;
     for family in &families {
-        writeln!(
-            writer,
-            "<option value=\"{}\">{}</option>",
-            family,
-            family
-        )?;
+        writeln!(writer, "<option value=\"{}\">{}</option>", family, family)?;
     }
     writeln!(writer, "</select></div>")?;
     writeln!(
@@ -632,7 +627,8 @@ fn load_group_history_summary(path: &Path) -> io::Result<BTreeMap<String, Histor
         entry.row_count += 1;
 
         if !creation_date.is_empty() {
-            entry.first_creation_date = min_option(entry.first_creation_date.take(), creation_date.clone());
+            entry.first_creation_date =
+                min_option(entry.first_creation_date.take(), creation_date.clone());
             entry.last_creation_date = max_option(entry.last_creation_date.take(), creation_date);
         }
         if !decay_date.is_empty() {
@@ -676,7 +672,11 @@ fn collect_decay_events(windows: &[SatelliteWindow]) -> Vec<BTreeMap<&'static st
     events
 }
 
-fn write_json_data<T: JsonWritable>(writer: &mut dyn Write, name: &str, rows: &[T]) -> io::Result<()> {
+fn write_json_data<T: JsonWritable>(
+    writer: &mut dyn Write,
+    name: &str,
+    rows: &[T],
+) -> io::Result<()> {
     write!(writer, "const {}=[", name)?;
     for (index, row) in rows.iter().enumerate() {
         if index > 0 {

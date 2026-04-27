@@ -6,9 +6,55 @@ This repository contains the original `sgp4` code plus Starlink-oriented utiliti
 - `starlink_group_catalog`: manifest-driven group catalog fetcher
 - `starlink_group_gp_history`: full-history GP/TLE downloader per group
 - `starlink_group_timelapse`: launch/decay summary and HTML viewer with group filters
-- `starlink_shell_map`: Group 1 / Group 4 shell map, visibility heatmap, and SQLite export
+- `starlink_space_track_tles`: Space-Track current GP/TLE fetcher for objects whose name starts with `STARLINK`
+- `starlink_space_track_history`: Space-Track SATCAT + full GP_HISTORY downloader for every `SATNAME` starting with `STARLINK`
+- `spacex_leo_gp_history`: Space-Track full-history GP/TLE downloader for the SpaceX LEO catalog
+- `starlink_shell_map`: shell hierarchy + overlap coverage app built from the current Starlink TLE set
+- `data/starlink_group1_coverage_550km/index.html`: static coverage map for a 550 km shell with a 25 degree elevation mask
 
-## Starlink group pipeline
+## Starlink Space-Track Pipeline
+
+The current default shell-map flow is:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_tles
+cargo run --bin starlink_shell_map
+```
+
+This produces:
+
+- `data/starlink_space_track_current.tle`
+- `data/starlink_shell_map/data.js`
+- `data/starlink_shell_map/shell_summary.csv`
+- `data/starlink_shell_map/index.html`
+
+`starlink_space_track_tles` queries the Space-Track `GP` class and writes TLE format locally. It uses a one-hour local cache by default because Space-Track asks users not to repeatedly download current GP/TLE data. Use `--force` only when you intentionally want to refresh.
+
+For all historical Starlink GP/TLE records instead of only the current public TLE set:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_history
+```
+
+Resume an interrupted batch download:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_history -- --resume
+```
+
+With `--resume`, valid existing files under `starlink-space-track-history/batches/` are skipped and missing or invalid batches are downloaded.
+
+This writes:
+
+- `starlink-space-track-history/starlink_satcat.csv`
+- `starlink-space-track-history/starlink_gp_history.csv`
+- `starlink-space-track-history/gp_history_urls_full_history.csv`
+- `starlink-space-track-history/batches/`
+
+## Legacy Starlink group pipeline
 
 The current Starlink workflow is:
 
@@ -25,6 +71,7 @@ This produces:
 - `starlink-groups/<group_slug>/starlink_gp_history.csv`
 - `data/starlink_group_timelapse.html`
 - `data/starlink_shell_map/index.html`
+- `data/starlink_group1_coverage_550km/index.html`
 - `data/starlink_shell_map/starlink_shell_map.sqlite`
 
 ## Important files
@@ -83,7 +130,41 @@ Generate the launch/decay viewer after TLE download:
 cargo run --bin starlink_group_timelapse
 ```
 
-Generate the shell map app and relational export from the local Group 1 / Group 4 histories:
+Fetch all current Space-Track Starlink TLEs:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_tles
+```
+
+Preview the Space-Track URL without logging in:
+
+```bash
+cargo run --bin starlink_space_track_tles -- --dry-run
+```
+
+Download full GP/TLE history for every Space-Track `SATNAME` starting with `STARLINK`:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_history
+```
+
+Download only a bounded creation-date window:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_history -- --start-date 2019-01-01 --end-date 2020-12-31
+```
+
+Fetch only the SATCAT target list first:
+
+```bash
+SPACE_TRACK_IDENTITY='you@example.com' SPACE_TRACK_PASSWORD='secret' \
+cargo run --bin starlink_space_track_history -- --catalog-only
+```
+
+Generate the shell map app from the current Starlink TLE set:
 
 ```bash
 cargo run --bin starlink_shell_map

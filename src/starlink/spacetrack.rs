@@ -236,7 +236,12 @@ pub fn build_gp_history_csv_url_candidates(ids: &[String], window: &QueryWindow)
     urls
 }
 
-fn build_gp_history_url(ids: &[String], window: &QueryWindow, format: &str, upper_case: bool) -> String {
+fn build_gp_history_url(
+    ids: &[String],
+    window: &QueryWindow,
+    format: &str,
+    upper_case: bool,
+) -> String {
     let field_name = if upper_case {
         "NORAD_CAT_ID"
     } else {
